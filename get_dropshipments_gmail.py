@@ -795,7 +795,13 @@ def process_dpd_messages(conn):
                 mail_info["county_post_city"] = mail_body.xpath("//p[contains(text(),'Referentienummer:')]//text()[3]")[0].lower()
 
             *_, mail_info["postcode"], mail_info["city"], _ = re.split("(\w+-)(\d+\w+)\s(.+)", mail_info["county_post_city"])
-            _, mail_info["street"], mail_info["house_number"], _ = re.split("(\D+) (\d+.*)", mail_info["street_nr"])
+            try:
+                _, mail_info["street"], mail_info["house_number"], _ = re.split("(\D+) (\d+.*)", mail_info["street_nr"])
+            except (IndexError, ValueError) as e:
+                logger.info(f"amazon ? {e}")
+                mark_read(conn,message_treads_id)
+                add_label_processed_verzending(conn,message_treads_id)
+                continue
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn,message_treads_id)
@@ -807,7 +813,7 @@ def process_dpd_messages(conn):
     message_treads_ids = get_messages(conn, 'from:(*@dpd.nl | *@dpd.be ) subject:("Je pakket")')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
-        mail_body = get_body_email(message)       
+        mail_body = get_body_email(message)
         try:
             mail_info = {
                 "dienst": "dpd",
@@ -853,8 +859,7 @@ def process_dpd_messages(conn):
             mail_info["street"] = " ".join(mail_info["street"])
             mail_info["postcode"], mail_info["city"] = re.split(" ", mail_info["postcode_plaats"])
             mail_info["land"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[5]/text()")
-            get_order_info_db = get_set_info_database(mail_info)
-            if get_order_info_db:
+            if get_order_info_db := get_set_info_database(mail_info):
                 mark_read(conn,message_treads_id)
             add_label_processed_verzending(conn,message_treads_id)
         except Exception as e:
