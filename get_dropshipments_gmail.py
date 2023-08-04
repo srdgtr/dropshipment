@@ -857,9 +857,11 @@ def process_dpd_messages(conn):
             mail_info["last_name"] = " ".join(mail_info["last_name"])
             *mail_info["street"], mail_info["house_number"] = mail_info["street_house"].split(" ")
             mail_info["street"] = " ".join(mail_info["street"])
-            mail_info["postcode"], mail_info["city"] = re.split(" ", mail_info["postcode_plaats"])
+            mail_info["postcode"], *mail_info["city"] = re.split(" ", mail_info["postcode_plaats"])
+            mail_info["city"] = " ".join(mail_info["city"])
             mail_info["land"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[5]/text()")
-            if get_order_info_db := get_set_info_database(mail_info):
+            get_order_info_db = get_set_info_database(mail_info)
+            if get_order_info_db:
                 mark_read(conn,message_treads_id)
             add_label_processed_verzending(conn,message_treads_id)
         except Exception as e:
@@ -909,7 +911,6 @@ def process_beekman_messages(conn):
             "dienst": "beekman",
             "beekman_url": mail_body.xpath("//a[normalize-space()='www.beekman.nl']/@href")[0],
         }
-        # "tt_url"
         if mail_body.xpath("//strong[contains(text(),'Audio Video Van Gils B.V.')]"):
             mark_read(conn,message_treads_id)
             continue
@@ -1030,7 +1031,6 @@ def process_bol_orders(conn,product_type,zoek_string):
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         headers=message["payload"]["headers"]
         order_nr = re.search('\d+',[i['value'] for i in headers if i["name"]=="Subject"][0].rsplit(":")[-1]).group()
-        print(re.split("[@ .]",[i['value'] for i in headers if i["name"]=="To"][0]))
         try:
             _,webwinkel,to,_ = re.split("[@ .]",[i['value'] for i in headers if i["name"]=="To"][0])
         except ValueError as e:
