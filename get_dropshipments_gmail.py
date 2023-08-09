@@ -900,6 +900,11 @@ def process_postnl_ur_messages(conn):
             add_label_processed_verzending(conn,message_treads_id)
         except Exception as e:
             logger.error(f"stap 3 united {mail_info} failed {e}")
+    message_treads_ids = get_messages(conn, 'from:(*@vangilsweb.nl| *@edm.postnl.*) subject:("Dit is de bezorgtijd van je pakket" | "We zijn naar je onderweg met je pakket")')
+    for message_treads_id in message_treads_ids:
+        mark_read(conn,message_treads_id)
+        add_label_processed_verzending(conn,message_treads_id)
+        
 
 def process_beekman_messages(conn):
     from requests_html import HTMLSession
