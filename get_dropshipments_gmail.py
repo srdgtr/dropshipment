@@ -821,6 +821,7 @@ def process_dpd_messages(conn):
             }
         except (IndexError, ValueError) as e:
             logger.info(f"stap 3 dpd failed because of no tt_link(zoals in bezorgd links), message id {message_treads_id} {e}")
+            mark_read(conn,message_treads_id)
             add_label_processed_verzending(conn,message_treads_id)
             continue
         try:
@@ -908,7 +909,7 @@ def process_postnl_ur_messages(conn):
 
 def process_beekman_messages(conn):
     from requests_html import HTMLSession
-    message_treads_ids = get_messages(conn, 'from:(*@beekman.nl) "bevestiging voor zending"')
+    message_treads_ids = get_messages(conn, 'from:(*@beekman.nl) "Verzend bevestiging"')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
@@ -918,6 +919,7 @@ def process_beekman_messages(conn):
         }
         if mail_body.xpath("//strong[contains(text(),'Audio Video Van Gils B.V.')]"):
             mark_read(conn,message_treads_id)
+            add_label_processed_verzending(conn,message_treads_id)
             continue
         session = HTMLSession()
         page = session.get("https://www.beekman.nl/inloggen")
