@@ -1,19 +1,21 @@
 import base64
 import configparser
 import datetime
-from email.utils import make_msgid
 import io
 import logging
 import mimetypes
 import pickle
 import re
-from sqlite3 import OperationalError
-import sys
 import subprocess
-from pathlib import Path
-from bs4 import BeautifulSoup
-import requests
+import sys
 from email.message import EmailMessage
+from email.utils import make_msgid
+from pathlib import Path
+
+import requests
+from bs4 import BeautifulSoup
+from MySQLdb import OperationalError
+
 
 def install(package):
     subprocess.call([sys.executable, "-m", "pip", "install", package])
@@ -48,13 +50,15 @@ except ModuleNotFoundError as e:
     install("lxml")
     from lxml import etree
 try:
-    from sqlalchemy import MetaData, Table, create_engine, select, update, text, and_
+    from sqlalchemy import (MetaData, Table, and_, create_engine, select, text,
+                            update)
 except ModuleNotFoundError as e:
     print(e, "trying to install")
     install("sqlalchemy")
     from sqlalchemy import MetaData, Table, create_engine, select, update, text, and_
 
-from sqlalchemy import MetaData, Table, create_engine, select, update, text, and_
+from sqlalchemy import (MetaData, Table, and_, create_engine, select, text,
+                        update)
 from sqlalchemy.engine.url import URL
 
 sys.path.insert(0, str(Path.home()))
@@ -709,39 +713,43 @@ def process_transmision_messages(conn):
 
 def process_gls_messages(conn):
     # get send info Amacom.
-    message_treads_ids = get_messages(conn, 'from:(*@gls-group.eu) subject:"We hebben een pakje voor jou!"')
+    message_treads_ids = get_messages(conn, 'from:(*@gls-netherlands.com) subject:"jouw pakket van GLS!"')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
         mail_info = {
             "dienst": "gls",
-            "tt_url": mail_body.xpath("//h4[contains(text(),'Parcel nummer')]/../p/a/@href")[0],
+            "tt_url": mail_body.xpath("//a[contains(@href,'tracking')]/@href")[0],
         }
         try:
-            if "gls-group.eu" in mail_info["tt_url"]:
-                mail_info["tt_num"] = mail_info["tt_url"].split("=")[-1]
-            elif "go.mygls.be" in mail_info["tt_url"]:
-                mail_info["tt_num"] = mail_info["tt_url"].split("/")[-1]
-            _, mail_info["first_name"], mail_info["last_name"] = [
+            mail_info["tt_num"] = mail_info["tt_url"].split("=")[1].split("&")[0]
+            _, mail_info["last_name"], mail_info["first_name"] = [
                 x.strip(",")
                 for x in re.split(
-                    "^(\w+)\s",
-                    mail_body.xpath("//h3[normalize-space()='Bezorgadres']/../..//p//text()")[0].strip().lower(),
+                    "(\w+)$",
+                    mail_body.xpath("//td/table[contains(@bgcolor,'#F3F3F3')]//tr[7]/td//text()")[1].strip().lower(),
                 )
             ]
-            _, mail_info["street"], *_, mail_info["city"], _ = [
+            mail_info["street"], *mail_info["house_number"] = [
                 x.strip(",")
                 for x in re.split(
-                    "^(\w+)\s(\d).+\s(\d+)\s(\w+)",
-                    mail_body.xpath("//h3[normalize-space()='Bezorgadres']/../..//p//text()")[1].strip().lower(),
+                    "(\d.+)",
+                    mail_body.xpath("//td/table[contains(@bgcolor,'#F3F3F3')]//tr[8]/td/text()")[1].replace('\r\n', '').strip().lower(),
                 )
             ]
+            mail_info["house_number"] = " ".join(mail_info["house_number"])
+            mail_info["postcode"], mail_info["city"]= mail_body.xpath("//td/table[contains(@bgcolor,'#F3F3F3')]//tr[9]/td/text()")[1].strip().lower().split()
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn,message_treads_id)
             add_label_processed_verzending(conn,message_treads_id)
         except Exception as e:
             logger.error(f"stap 3 gls {mail_info} failed {e}")
+
+    message_treads_ids = get_messages(conn, 'from:(*@gls-netherlands.com) subject:"Informatie over uw zending via GLS"')
+    for message_treads_id in message_treads_ids:
+        mark_read(conn,message_treads_id)
+        add_label_processed_verzending(conn,message_treads_id)
 
 
 def process_dpd_messages(conn):
@@ -753,7 +761,7 @@ def process_dpd_messages(conn):
         try:
             mail_info = {
                 "dienst": "dpd",
-                "tt_url": mail_body.xpath("//a[normalize-space()='Zending volgen']/@href")[0],
+                "tt_url": mail_body.xpath("//a[contains(text(),'Zending volgen')]/@href")[0],
                 "tt_num": mail_body.xpath("//td[contains(text(),'Paket')]")[0].text.split(":")[-1].split("-")[0].strip(),
             }
         except (IndexError, ValueError) as e:
