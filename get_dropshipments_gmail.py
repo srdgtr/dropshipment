@@ -947,17 +947,21 @@ def process_beekman_messages(conn):
         mail_info["tt_url"] = tt_page.xpath("//a[normalize-space()='Klik hier om uw zending te volgen']/@href")[0]
         if postorg == "PostNL":
             mail_info["tt_num"] = mail_info["tt_url"].split("/")[-1].split("-")[0]
-            postnl_api_info = requests.get(f"{mail_info['tt_url'].replace('track-and-trace','track-and-trace/api/trackAndTrace')}?language=nl").json()["colli"].get(mail_info["tt_num"])
-            if postnl_api_info["recipient"]["names"].get("personName"):
-                mail_info["first_name"], *mail_info["last_name"] = postnl_api_info["recipient"]["names"].get("personName").split()
-            elif postnl_api_info["recipient"]["names"].get("companyName"):
-                mail_info["first_name"], *mail_info["last_name"] = postnl_api_info["recipient"]["names"].get("companyName").split()
-            mail_info["last_name"] = " ".join(mail_info["last_name"])
-            mail_info["street"] = postnl_api_info["recipient"]["address"]["street"] 
-            mail_info["house_number"] = postnl_api_info["recipient"]["address"]["houseNumber"]
-            mail_info["postcode"] = postnl_api_info["recipient"]["address"]["postalCode"] 
-            mail_info["city"] = postnl_api_info["recipient"]["address"]["town"] 
-        if postorg == "DHL Parcel":
+            try:
+                postnl_api_info = requests.get(f"{mail_info['tt_url'].replace('track-and-trace','track-and-trace/api/trackAndTrace')}?language=nl").json()["colli"].get(mail_info["tt_num"])
+                if postnl_api_info["recipient"]["names"].get("personName"):
+                    mail_info["first_name"], *mail_info["last_name"] = postnl_api_info["recipient"]["names"].get("personName").split()
+                elif postnl_api_info["recipient"]["names"].get("companyName"):
+                    mail_info["first_name"], *mail_info["last_name"] = postnl_api_info["recipient"]["names"].get("companyName").split()
+                mail_info["last_name"] = " ".join(mail_info["last_name"])
+                mail_info["street"] = postnl_api_info["recipient"]["address"]["street"] 
+                mail_info["house_number"] = postnl_api_info["recipient"]["address"]["houseNumber"]
+                mail_info["postcode"] = postnl_api_info["recipient"]["address"]["postalCode"] 
+                mail_info["city"] = postnl_api_info["recipient"]["address"]["town"]
+            except TypeError as e:
+                logger.error(f"stap 3 beekman {mail_info} failed, package not found on postnl {e}")
+                break
+        elif postorg == "DHL Parcel":
             postal_code = tt_page.xpath("//address//text()[3]")[0].strip().split(" ",1)[0]
             mail_info["tt_num"] = re.split(r'[=&]', mail_info['tt_url'])[1]
             dhl_api_info = requests.get(f"https://api-gw.dhlparcel.nl/track-trace?key={mail_info['tt_num']}%2B{postal_code}").json()[0]
