@@ -841,7 +841,7 @@ def process_dpd_messages(conn):
             except (IndexError, ValueError) as e:
                 try:
                     crfs = page_body.xpath("//meta[@name='_csrf']/@content")[0]
-                    mail_info["tt_num"] = ''.join(char for char in mail_body.xpath("//span[contains(text(),'Uw bestelling met pakketnummer')]/text()")[0] if char in '0123456789') 
+                    mail_info["tt_num"] = ''.join(char for char in mail_body.xpath("//span[contains(text(),'Uw bestelling met pakketnummer')]/text()")[0] if char in '0123456789')
                     postalcode = mail_body.xpath("//span[contains(text(),'*:')]/..//span/text()[last()]")[0].strip().split(" ",1)[0]
                     data = {
                         '_csrf': crfs,
@@ -859,7 +859,13 @@ def process_dpd_messages(conn):
                     mail_info["tt_num"] = page_body.xpath("//span[@class='parcelAlias']/../span/span//text()")[0]
                     add_label_processed_verzending(conn,message_treads_id)
                     continue
-            mail_info["full_name"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[2]/text()")[0]
+            try:
+                mail_info["full_name"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[2]/text()")[0]
+            except (IndexError, ValueError) as e:
+                mark_read(conn,message_treads_id)
+                add_label_processed_verzending(conn,message_treads_id)
+                logger.error(f"stap 3 dpd {mail_info} failed {e}")
+                break
             mail_info["street_house"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[3]/text()")[0]
             mail_info["postcode_plaats"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[4]/text()")[0]
             mail_info["first_name"], *mail_info["last_name"] = mail_info["full_name"].lower().split(" ", 1)
@@ -964,7 +970,12 @@ def process_beekman_messages(conn):
         elif postorg == "DHL Parcel":
             postal_code = tt_page.xpath("//address//text()[3]")[0].strip().split(" ",1)[0]
             mail_info["tt_num"] = re.split(r'[=&]', mail_info['tt_url'])[1]
-            dhl_api_info = requests.get(f"https://api-gw.dhlparcel.nl/track-trace?key={mail_info['tt_num']}%2B{postal_code}").json()[0]
+            response = requests.get(f"https://api-gw.dhlparcel.nl/track-trace?key={mail_info['tt_num']}%2B{postal_code}")
+            if response.status_code == 200:
+                dhl_api_info = response.json()[0]
+            if response.status_code == 404:
+                logger.error(f"stap 3 beekman {mail_info['tt_num']} failed, package not found on dhl")
+                break
             mail_info["first_name"], *mail_info["last_name"] = dhl_api_info["receiver"]["name"].split()
             if mail_info["first_name"].lower() in ("ten","de","het","van","van den", "van der", "van het"): # sommige doen het net omgedraaid, daarom checken, of tussenvoegsel waarschijndelijk is 
                 *mail_info["last_name"], mail_info["first_name"] = dhl_api_info["receiver"]["name"].split()

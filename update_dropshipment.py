@@ -178,7 +178,6 @@ with engine.connect() as connection:
             page = requests.get(order_dict['t_t_dropshipment'])
             page_body = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
             shipment_on_depot = next((text for text in page_body.xpath("//td[contains(text(),'In bestelling')]/text()|//td[contains(text(),'Aflever Scan')]/text()") if any(keyword in text for keyword in ["In bestelling", "Aflever Scan"])), None)
-            # shipment_on_depot = any(keyword in page_body.xpath("//td[contains(text(),'In bestelling')]/text()|//td[contains(text(),'Aflever Scan')]/text()")[0] for keyword in ["In bestelling", "Aflever Scan"])
             if shipment_on_depot:
                 order_dict["verzendpartner"] = "TRANSMISSION"
                 bol_at_depot.append(order_dict)
