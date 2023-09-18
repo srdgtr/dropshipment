@@ -6,7 +6,6 @@ import datetime
 import io
 from lxml import etree
 
-
 from pathlib import Path
 import time
 
@@ -169,11 +168,15 @@ with engine.connect() as connection:
                 order_dict["verzendpartner"] = "TNT"
                 bol_at_depot.append(order_dict)
         elif "dpd" in order_dict['t_t_dropshipment']:
-            shipment_info = requests.get(f"https://tracking.dpd.de/rest/plc/nl_NL/{order_dict['order_id_leverancier']}").json()
-            shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in shipment_info["parcellifecycleResponse"]["parcelLifeCycleData"]["statusInfo"])
-            if shipment_on_depot or status:
-                order_dict["verzendpartner"] = "DPD-NL"
-                bol_at_depot.append(order_dict)
+            response = requests.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['order_id_leverancier']}")
+            if response.headers.get('Content-Type').startswith('application/json'):
+                shipment_info = response.json()
+                shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in shipment_info["parcellifecycleResponse"]["parcelLifeCycleData"]["statusInfo"])
+                if shipment_on_depot:
+                    order_dict["verzendpartner"] = "DPD-NL"
+                    bol_at_depot.append(order_dict)
+            else:
+                logger.info(f"niet bekend bij api dpd,{order_dict['t_t_dropshipment']}")
         elif "trans-mission" in order_dict['t_t_dropshipment']:
             page = requests.get(order_dict['t_t_dropshipment'])
             page_body = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
@@ -183,6 +186,18 @@ with engine.connect() as connection:
                 bol_at_depot.append(order_dict)
             else:
                 logger.info(f"nog niet verwerkt door transmission,{order_dict['t_t_dropshipment']}")
+        elif "dynalogic" in order_dict['t_t_dropshipment']:
+            headers = {
+                'Referer': 'https://track.mydynalogic.eu/track/order',
+                'X-Auth-Token': 'dyna:6507f86f6f3a1',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+            response = requests.get(f"https://track.mydynalogic.eu/api/transportorder/full/ordernumber/{order_dict['order_id_leverancier']}/zipcode/{order_dict['shipmentdetails_zipcode']}", headers=headers)
+            if response.headers.get('Content-Type').startswith('application/json'):
+                shipment_info = response.json()
+                if shipment_info['data']['ActiveStep'] >= 3:
+                    order_dict["verzendpartner"] = "DYL"
+                    bol_at_depot.append(order_dict)
 
 
 def custom_sort(item):

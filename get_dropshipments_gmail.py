@@ -885,7 +885,7 @@ def process_dpd_messages(conn):
 
 def process_postnl_ur_messages(conn):
     # get send info united retail.
-    message_treads_ids = get_messages(conn, 'from:(*@vangilsweb.nl) "Uw bestelling is verzonden"')
+    message_treads_ids = get_messages(conn, '"Uw bestelling is verzonden"')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
