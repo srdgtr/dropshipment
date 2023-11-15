@@ -703,7 +703,7 @@ def process_transmision_messages(conn):
             ]
             mail_info["last_name"] = " ".join(mail_info["last_name"])
             mail_info["street"], mail_info["house_number"], *_ = [
-                x.strip() for x in re.split("(\d+)", mail_body.xpath("//b[contains(text(),'AFLEVERADRES:')]/../text()")[2].lower())
+                x.strip() for x in re.split(r"(\d+)", mail_body.xpath("//b[contains(text(),'AFLEVERADRES:')]/../text()")[2].lower())
             ]
             mail_info["postcode"], mail_info["city"] = [
                 x.strip() for x in re.split(" ", mail_body.xpath("//b[contains(text(),'AFLEVERADRES:')]/../text()")[3].lower(), 1)
@@ -731,14 +731,14 @@ def process_gls_messages(conn):
             _, mail_info["last_name"], mail_info["first_name"] = [
                 x.strip(",")
                 for x in re.split(
-                    "(\w+)$",
+                    r"(\w+)$",
                     mail_body.xpath("//td/table[contains(@bgcolor,'#F3F3F3')]//tr[7]/td//text()")[1].strip().lower(),
                 )
             ]
             mail_info["street"], *mail_info["house_number"] = [
                 x.strip(",")
                 for x in re.split(
-                    "(\d.+)",
+                    r"(\d.+)",
                     mail_body.xpath("//td/table[contains(@bgcolor,'#F3F3F3')]//tr[8]/td/text()")[1].replace('\r\n', '').strip().lower(),
                 )
             ]
@@ -775,7 +775,7 @@ def process_dpd_messages(conn):
             continue
         try:
             *_, mail_info["order_num"], _ = [
-                x.strip().strip(",").replace("-","") for x in re.split("(.*)bestelnr: (.+\s)", mail_body.xpath("//p[contains(text(),'Referentienummer:')]/text()")[0].lower())
+                x.strip().strip(",").replace("-","") for x in re.split(r"(.*)bestelnr: (.+\s)", mail_body.xpath("//p[contains(text(),'Referentienummer:')]/text()")[0].lower())
             ]
         except (IndexError, ValueError) as e:
             logger.info(f"stap 3 dpd failed because of local delivery to us, message id {message_treads_id} {e}")
@@ -807,9 +807,9 @@ def process_dpd_messages(conn):
                 ]
                 mail_info["county_post_city"] = mail_body.xpath("//p[contains(text(),'Referentienummer:')]//text()[3]")[0].lower()
 
-            *_, mail_info["postcode"], mail_info["city"], _ = re.split("(\w+-)(\d+\w+)\s(.+)", mail_info["county_post_city"])
+            *_, mail_info["postcode"], mail_info["city"], _ = re.split(r"(\w+-)(\d+\w+)\s(.+)", mail_info["county_post_city"])
             try:
-                _, mail_info["street"], mail_info["house_number"], _ = re.split("(\D+) (\d+.*)", mail_info["street_nr"])
+                _, mail_info["street"], mail_info["house_number"], _ = re.split(r"(\D+) (\d+.*)", mail_info["street_nr"])
             except (IndexError, ValueError) as e:
                 logger.info(f"amazon ? {e}")
                 mark_read(conn,message_treads_id)
@@ -907,7 +907,7 @@ def process_postnl_ur_messages(conn):
                 mail_info["first_name"], *mail_info["last_name"] = postnl_api_info["recipient"]["names"].get("companyName").split()
             else: #sometimes, name not processed bij postnl,so use from mail
                 _, mail_info["first_name"], *mail_info["last_name"] = [
-                x.strip().strip(",") for x in re.split("^beste\s+(\w+)", mail_body.xpath("//strong[contains(text(),'Beste ')]")[0].text.lower())
+                x.strip().strip(",") for x in re.split(r"^beste\s+(\w+)", mail_body.xpath("//strong[contains(text(),'Beste ')]")[0].text.lower())
             ]
             mail_info["last_name"] = " ".join(mail_info["last_name"])
             mail_info["street"] = postnl_api_info["recipient"]["address"]["street"] 
@@ -1075,7 +1075,7 @@ def process_bol_orders(conn,product_type,zoek_string):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         headers=message["payload"]["headers"]
-        order_nr = re.search('\d+',[i['value'] for i in headers if i["name"]=="Subject"][0].rsplit(":")[-1]).group()
+        order_nr = re.search(r'\d+',[i['value'] for i in headers if i["name"]=="Subject"][0].rsplit(":")[-1]).group()
         try:
             _,webwinkel,to,_ = re.split("[@ .]",[i['value'] for i in headers if i["name"]=="To"][0])
         except ValueError as e:
