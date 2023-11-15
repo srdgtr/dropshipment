@@ -580,7 +580,12 @@ def process_dhl_messages(conn):
                     continue
                 trace_nr = str(plain_url).split("?")[0].split("/")[-1]
             else:
-                trace_nr,postal_code = str(plain_url).split("/")[5],str(plain_url).split("?")[0].split("/")[-1]
+                if "pc=4823AB" in str(plain_url):
+                    add_label_processed_verzending(conn,message_treads_id)
+                    logger.info(f"stap 3 dhl pakketje voor ons")
+                    continue
+                else:
+                    trace_nr,postal_code = str(plain_url).split("/")[5],str(plain_url).split("?")[0].split("/")[-1]
             dhl_api_info = requests.get(f"https://api-gw.dhlparcel.nl/track-trace?key={trace_nr}%2B{postal_code}").json()[0]
             mail_info["first_name"], *mail_info["last_name"] = dhl_api_info["receiver"]["name"].split()
             if mail_info["first_name"].lower() in ("ten","de","het","van","van den", "van der", "van het"): # sommige doen het net omgedraaid, daarom checken, of tussenvoegsel waarschijndelijk is 
@@ -660,7 +665,7 @@ def process_transmision_messages(conn):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
-        if mail_body.xpath("//td[contains(text(),'Kosten dropshipment')]"):
+        if mail_body.xpath("//td[contains(text(),'0010264')]"):
             drop = True
         else:
             drop = None
@@ -770,7 +775,7 @@ def process_dpd_messages(conn):
             continue
         try:
             *_, mail_info["order_num"], _ = [
-                x.strip().strip(",") for x in re.split("(.*)bestelnr: (\w+)", mail_body.xpath("//p[contains(text(),'Referentienummer:')]/text()")[0].lower())
+                x.strip().strip(",").replace("-","") for x in re.split("(.*)bestelnr: (.+\s)", mail_body.xpath("//p[contains(text(),'Referentienummer:')]/text()")[0].lower())
             ]
         except (IndexError, ValueError) as e:
             logger.info(f"stap 3 dpd failed because of local delivery to us, message id {message_treads_id} {e}")
@@ -885,7 +890,7 @@ def process_dpd_messages(conn):
 
 def process_postnl_ur_messages(conn):
     # get send info united retail.
-    message_treads_ids = get_messages(conn, '"Uw bestelling is verzonden"')
+    message_treads_ids = get_messages(conn, 'from: info@vangilsweb.nl subject:("Uw bestelling is verzonden")')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
@@ -922,7 +927,12 @@ def process_postnl_ur_messages(conn):
         
 
 def process_beekman_messages(conn):
-    from requests_html import HTMLSession
+    try:
+        from requests_html import HTMLSession
+    except ModuleNotFoundError as e:
+        print(e, "trying to install")
+        install("requests_html")
+        from requests_html import HTMLSession
     message_treads_ids = get_messages(conn, 'from:(*@beekman.nl) "Verzend bevestiging"')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
@@ -948,9 +958,14 @@ def process_beekman_messages(conn):
         }
         session.post("https://www.beekman.nl/inloggen", data=data)
         js_page = session.get(mail_info["beekman_url"])
+        # print(js_page.content)
         tt_page = etree.parse(io.BytesIO(js_page.content), etree.HTMLParser())
-        postorg = tt_page.xpath("//td[@class='text-left']//text()")[0]
-        mail_info["tt_url"] = tt_page.xpath("//a[normalize-space()='Klik hier om uw zending te volgen']/@href")[0]
+        try:
+            postorg = tt_page.xpath("//td[@class='text-left']//text()")[0]
+            mail_info["tt_url"] = tt_page.xpath("//a[normalize-space()='Klik hier om uw zending te volgen']/@href")[0]
+        except (IndexError):
+            logger.error(f"stap 1 beekman {mail_info['beekman_url']} failed, package trackentrace not found on beekman")
+            continue
         if postorg == "PostNL":
             mail_info["tt_num"] = mail_info["tt_url"].split("/")[-1].split("-")[0]
             try:
@@ -966,7 +981,7 @@ def process_beekman_messages(conn):
                 mail_info["city"] = postnl_api_info["recipient"]["address"]["town"]
             except TypeError as e:
                 logger.error(f"stap 3 beekman {mail_info} failed, package not found on postnl {e}")
-                break
+                continue
         elif postorg == "DHL Parcel":
             postal_code = tt_page.xpath("//address//text()[3]")[0].strip().split(" ",1)[0]
             mail_info["tt_num"] = re.split(r'[=&]', mail_info['tt_url'])[1]
@@ -975,7 +990,7 @@ def process_beekman_messages(conn):
                 dhl_api_info = response.json()[0]
             if response.status_code == 404:
                 logger.error(f"stap 3 beekman {mail_info['tt_num']} failed, package not found on dhl")
-                break
+                continue
             mail_info["first_name"], *mail_info["last_name"] = dhl_api_info["receiver"]["name"].split()
             if mail_info["first_name"].lower() in ("ten","de","het","van","van den", "van der", "van het"): # sommige doen het net omgedraaid, daarom checken, of tussenvoegsel waarschijndelijk is 
                 *mail_info["last_name"], mail_info["first_name"] = dhl_api_info["receiver"]["name"].split()

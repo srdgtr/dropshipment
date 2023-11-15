@@ -195,6 +195,8 @@ with engine.connect() as connection:
             response = requests.get(f"https://track.mydynalogic.eu/api/transportorder/full/ordernumber/{order_dict['order_id_leverancier']}/zipcode/{order_dict['shipmentdetails_zipcode']}", headers=headers)
             if response.headers.get('Content-Type').startswith('application/json'):
                 shipment_info = response.json()
+                if len(order_dict['order_id_leverancier']) > 1:
+                    order_dict['order_id_leverancier'] = order_dict['order_id_leverancier'].split(' ', 1)[-1]
                 if shipment_info['data']['ActiveStep'] >= 3:
                     order_dict["verzendpartner"] = "DYL"
                     bol_at_depot.append(order_dict)
