@@ -587,7 +587,14 @@ def process_dhl_messages(conn):
                     logger.info(f"stap 3 dhl pakketje voor ons")
                     continue
                 else:
-                    trace_nr,postal_code = str(plain_url).split("/")[5],str(plain_url).split("?")[0].split("/")[-1]
+                    try:
+                        trace_nr,postal_code = str(plain_url).split("/")[5],str(plain_url).split("?")[0].split("/")[-1]
+                    except IndexError:
+                        trace_nr = re.search(r'tc=([A-Z0-9]+)', str(plain_url)).group(1)
+                        logger.info(f"stap 3 dhl geen postcode {trace_nr}") #geen betrouwbare manier om postcode te achterhalen voor zover ik kan zien
+                        mark_read(conn,message_treads_id)
+                        add_label_processed_verzending(conn,message_treads_id)
+                        continue
             dhl_api_info = requests.get(f"https://api-gw.dhlparcel.nl/track-trace?key={trace_nr}%2B{postal_code}").json()[0]
             mail_info["first_name"], *mail_info["last_name"] = dhl_api_info["receiver"]["name"].split()
             if mail_info["first_name"].lower() in ("ten","de","het","van","van den", "van der", "van het"): # sommige doen het net omgedraaid, daarom checken, of tussenvoegsel waarschijndelijk is 
