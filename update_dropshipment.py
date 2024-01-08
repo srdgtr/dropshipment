@@ -156,13 +156,15 @@ with engine.connect() as connection:
         if "dhl" in order_dict['t_t_dropshipment']:
             shipment_info = requests.get(f"https://api-gw.dhlparcel.nl/track-trace?key={order_dict['order_id_leverancier']}%2B{order_dict['shipmentdetails_zipcode']}").json()[0]
             shipment_on_depot = any(event.get('status') == "PARCEL_ARRIVED_AT_LOCAL_DEPOT" for event in shipment_info['events'])
+            if datetime.date.today() == datetime.datetime.strptime(shipment_info.get('plannedDeliveryTimeframe')[:10], "%Y-%m-%d").date() if shipment_info.get('plannedDeliveryTimeframe') else None:
+                shipment_on_depot = True
             if shipment_on_depot:
                 order_dict["verzendpartner"] = "DHL"
                 bol_at_depot.append(order_dict)
         elif "postnl" in order_dict['t_t_dropshipment']:
             shipment_info = requests.get(f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['t_t_dropshipment'].split('/')[-1]}?language=nl").json()
             observations = shipment_info.get("colli", {}).get(order_dict['order_id_leverancier'], {}).get("observations", [])
-            status = shipment_info.get("colli", {}).get(order_dict['order_id_leverancier'], {}).get("statusPhase", []).get("message") == "Zending is gesorteerd"
+            status = shipment_info.get("colli", {}).get(order_dict['order_id_leverancier'], {}).get("statusPhase", {}).get("message") in ["Pakket is bezorgd", "Zending is gesorteerd"]
             shipment_on_depot = any(observation.get("description") == "Zending is gesorteerd" for observation in observations)
             if shipment_on_depot or status:
                 order_dict["verzendpartner"] = "TNT"
@@ -171,7 +173,11 @@ with engine.connect() as connection:
             response = requests.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['order_id_leverancier']}")
             if response.headers.get('Content-Type').startswith('application/json'):
                 shipment_info = response.json()
-                shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in shipment_info["parcellifecycleResponse"]["parcelLifeCycleData"]["statusInfo"])
+                try:
+                    status_info = shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
+                    shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
+                except AttributeError:
+                    shipment_on_depot = None
                 if shipment_on_depot:
                     order_dict["verzendpartner"] = "DPD-NL"
                     bol_at_depot.append(order_dict)

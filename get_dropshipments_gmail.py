@@ -11,9 +11,11 @@ import sys
 from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
+from ftplib import FTP
+import lxml.etree as et
 
 import requests
-from bs4 import BeautifulSoup
+# from bs4 import BeautifulSoup
 from MySQLdb import OperationalError
 
 
@@ -1004,7 +1006,33 @@ def process_beekman_messages(conn):
             mark_read(conn,message_treads_id)
         add_label_processed_verzending(conn,message_treads_id)
        
+def process_ftp_files_tt_exl(server,login,wachtwoord):
+    """Omdat ze deze nu alleen via ftp beschikbaar maken voor dropshipment"""
+    with FTP(server) as ftp:
+        ftp.login(login, passwd=wachtwoord)
 
+        file_names = ftp.nlst()
+        tt_files = [line for line in file_names if "xml" in line]
+
+        for file in tt_files:
+            file_lines = []
+            ftp.retrlines(f'RETR {file}', file_lines.append)
+            xml_content = '\n'.join(file_lines)
+            parse_xml = et.fromstring(xml_content)
+            order_id = parse_xml.find('.//OrderExternalId_01').text
+            tt_number = parse_xml.find('.//trackingnumber').text
+            track_en_trace_url = f"https://tracking.dpd.de/parcelstatus?query={tt_number}"
+            if "_" in order_id:
+                info_bol_db = f"SELECT orderid,order_orderitemid FROM orders_info_bol WHERE orderid = '{order_id}'"
+                with engine.connect() as connection:
+                    order_info = connection.exec_driver_sql(info_bol_db).first()
+                set_order_info_db_bol(order_info, track_en_trace_url, tt_number)
+            elif "-" in order_id:
+                info_blok_db = f"SELECT I.order_line_id FROM blokker_orders O LEFT JOIN blokker_order_items I ON O.commercialid = I.commercialid WHERE order_id = '{order_id}'"
+                with engine.connect() as connection:
+                    order_line_id = connection.exec_driver_sql(info_blok_db).first()
+                set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
+            ftp.delete(file)
 
 def gmail_send_mail(conn,order_id,kvk_winkel,bol_email,waarvoor): #meerdere bol winkel onder zelfde kvk, maar kvk bepaald de layout
     """Create and insert a draft email.
@@ -1014,8 +1042,8 @@ def gmail_send_mail(conn,order_id,kvk_winkel,bol_email,waarvoor): #meerdere bol 
         #html text for mail
         standaard_begin_text = "Beste klant,<br><br>Bedankt voor uw bestelling!<br><br>"
         standaard_eind_text = "<br><br><br>Met vriendelijke groet,<br><br>Uw Support-team:<br>"
-        begin_levertijd = "Indien u dit voor"
-        einde_levertijd = "door zou willen geven, kunnen wij uw pakket nog tegen houden voor verzending indien dit nodig is."
+        # begin_levertijd = "Indien u dit voor"
+        # einde_levertijd = "door zou willen geven, kunnen wij uw pakket nog tegen houden voor verzending indien dit nodig is."
 
         onderwerpen = {
             "waterreservoir" : "U heeft bij ons een waterreservoir besteld voor uw koffiezetapparaat. Nu blijkt uit ervaring dat er vaak wat onduidelijkheid heerst over het type reservoir dat er nodig is.<br> Mocht u twijfelen of dat u het juiste exemplaar heeft besteld willen wij u vragen om een foto te maken van het typeplaatje dat op uw apparaat staat. In sommige gevallen zit er geen typeplaatje op het apparaat maar staat het typenummer in het apparaat zelf gedrukt. <br> <br>",
@@ -1029,11 +1057,11 @@ def gmail_send_mail(conn,order_id,kvk_winkel,bol_email,waarvoor): #meerdere bol 
         image_cid = make_msgid(domain=f"{kvk_winkel}.nl")
         if kvk_winkel == "toopbv":
             message['From'] = 'toopbv@gmail.com'
-            message.add_alternative(f"<html><body>{standaard_begin_text}{voor_welke_type}{begin_levertijd} 3 uur in de middag {einde_levertijd}{standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='logo toop'></body></html>", subtype='html')
+            message.add_alternative(f"<html><body>{standaard_begin_text}{voor_welke_type} Voor 'same day delivery' orders hebben wij deze informatie voor 9.00 uur in de ochtend nodig om uw bestelling nog aan de kunnen passen. Voor 'next day delivery' orders hebben wij deze informatie voor 15.00 uur nodig.{standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='logo toop'></body></html>", subtype='html')
             sign_picture = "toop.png"
         elif kvk_winkel == "vangilsweb":
             message['From'] = 'info@vangilsweb.nl'
-            message.add_alternative(f"<html><body>{standaard_begin_text}{voor_welke_type}{begin_levertijd} 9 uur `s ochtends {einde_levertijd}{standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='logo van gils'></body></html>", subtype='html')
+            message.add_alternative(f"<html><body>{standaard_begin_text}{voor_welke_type} Voor 'same day delivery' orders hebben wij deze informatie voor 9.00 uur in de ochtend nodig om uw bestelling nog aan de kunnen passen. Voor 'next day delivery' orders hebben wij deze informatie voor 15.00 uur nodig.{standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='logo van gils'></body></html>", subtype='html')
             sign_picture = "vangils.jpg"
 
         if waarvoor in ("waterreservoir","padhouder"):
@@ -1109,6 +1137,7 @@ if __name__ == "__main__":
     process_dpd_messages(connection)
     process_postnl_ur_messages(connection)
     process_beekman_messages(connection)
+    process_ftp_files_tt_exl(config["excellent dropship tt"]["server"],config["excellent dropship tt"]["login"],config["excellent dropship tt"]["wachtwoord"])
 
     # # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
     process_bol_orders(connection,product_type="waterreservoir",zoek_string="Dolce Gusto Waterreservoir")

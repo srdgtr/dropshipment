@@ -32,7 +32,7 @@ cursor = connection_server.cursor()
 logger = logging.getLogger("process_difox")
 logging.basicConfig(filename="process_difox_" + datetime.date.today().strftime("%V") + ".log", level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")#nieuwe log elke week
 
-invoices = [p for p in Path('/home/toopbv/domains/toop.nl/public_html/ftpdifox/invoices/').iterdir() if p.is_file() and p.suffix == '.csv']
+invoices = [p for p in Path('/home/webshops/domains/toopbv.nl/public_html/ftpdifox/invoices/').iterdir() if p.is_file() and p.suffix == '.csv']
 
 def check_local_drop(order_nr):
     get_current_drop_number = "SELECT dropship FROM orders_info_bol WHERE orderid = %s"
@@ -68,9 +68,9 @@ for data_file in invoices:
     except mysql.connector.Error as error:
         logger.error(f"Failed to update {error}")
         file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "err"
-    shutil.move(path / file_name, new_path / file_name)  
+    shutil.move(path / file_name, new_path / file_name) 
 
-backorder = [p for p in Path('/home/toopbv/domains/toop.nl/public_html/ftpdifox/ordrsp/').iterdir() if p.is_file() and p.suffix == '.csv']
+backorder = [p for p in Path('/home/webshops/domains/toopbv.nl/public_html/ftpdifox/ordrsp/').iterdir() if p.is_file() and p.suffix == '.csv']
 
 for data_file in backorder:
     invoice = pd.read_csv(data_file, delimiter=";", encoding='latin-1', dtype=object, header=None)
@@ -99,7 +99,7 @@ for data_file in backorder:
         logger.error(f"Geen dropshipment {file_name}")
         shutil.move(path / file_name, new_path / file_name)
 
-verzendingen = [p for p in Path('/home/toopbv/domains/toop.nl/public_html/ftpdifox/desadv/').iterdir() if p.is_file() and p.suffix == '.csv']
+verzendingen = [p for p in Path('/home/webshops/domains/toopbv.nl/public_html/ftpdifox/desadv/').iterdir() if p.is_file() and p.suffix == '.csv']
 
 for data_file in verzendingen:
     invoice = pd.read_csv(data_file, delimiter=";", encoding='latin-1', dtype=object, header=None)
