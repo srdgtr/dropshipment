@@ -104,8 +104,8 @@ class BOL_API:
             token = init_request.json()["access_token"]
             if token:  # add right headers
                 post_header = {
-                    "Accept": "application/vnd.retailer.v9+json",
-                    "Content-Type": "application/vnd.retailer.v9+json",
+                    "Accept": "application/vnd.retailer.v10+json",
+                    "Content-Type": "application/vnd.retailer.v10+json",
                     "Authorization": "Bearer " + token,
                     "Connection": "keep-alive",
                 }
@@ -125,13 +125,13 @@ class BOL_API:
 niet_verwerkte_bol_dropship_orders = "SELECT I.orderid,I.order_orderitemid,O.shipmentdetails_zipcode,I.dropship,I.order_id_leverancier,I.t_t_dropshipment FROM orders_info_bol I LEFT JOIN orders_bol O ON I.orderid = O.orderid WHERE I.t_t_dropshipment > 1 < 4 AND I.order_droped_tt_to_bol IS NULL AND O.active_order = 1 ORDER BY O.updated_on DESC"
 
 def send_request_shiping_info_to_bol(self, verzender_drop, tt_num, bol_order_item,order_id):
-    url = "https://api.bol.com/retailer/orders/shipment"
+    url = "https://api.bol.com/retailer/shipments"
     transport_info_dict_bol = {
         "orderItems": [{"orderItemId": bol_order_item}],
         "shipmentReference": None,
         "transport": {"transporterCode": verzender_drop, "trackAndTrace": tt_num},
     }
-    response = requests.request("PUT", url, headers=self.access_token, json=transport_info_dict_bol)
+    response = requests.request("POST", url, headers=self.access_token, json=transport_info_dict_bol)
     if response.status_code == 202:
         url = f"https://api.bol.com/shared/process-status/{response.json()['processStatusId']}"
         for _ in range(10):
