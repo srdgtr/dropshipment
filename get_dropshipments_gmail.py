@@ -63,7 +63,7 @@ except ModuleNotFoundError as e:
 from sqlalchemy import MetaData, Table, and_, create_engine, select, text, update
 from sqlalchemy.engine.url import URL
 
-sys.path.insert(0, str(Path.home()))
+sys.path.insert(0, str(Path.cwd().parent))
 from bol_export_file import get_file
 
 config = configparser.ConfigParser()
@@ -157,6 +157,16 @@ def set_order_info_db_blokker(order_info, track_en_trace_url, track_en_trace_num
     with engine.begin() as conn:
         conn.execute(drop_send)
 
+def set_mailsend_db_bol(order_info):
+    orders_info_bol = Table("orders_info_bol", metadata, autoload_with=engine)
+    logger.info(f"info {order_info} mail send ")
+    mail_send = (
+        update(orders_info_bol)
+        .where(orders_info_bol.columns.orderid == order_info)
+        .values(extra_info_mail_verzonden=True)
+    )
+    with engine.begin() as conn:
+        conn.execute(mail_send)
 
 def get_body_email(mess):
     try:
@@ -1329,6 +1339,7 @@ def process_bol_orders(conn, product_type, zoek_string):
             logger.error(f"order_id not found {odin_order_nr} {e}")
         if send:
             add_label_processed_return(conn, message_treads_id)
+            set_mailsend_db_bol(odin_order_nr)
 
 
 if __name__ == "__main__":
