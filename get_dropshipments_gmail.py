@@ -2,6 +2,7 @@ import base64
 import configparser
 import datetime
 import io
+import json
 import logging
 import mimetypes
 import pickle
@@ -66,7 +67,7 @@ from sqlalchemy.engine.url import URL
 sys.path.insert(0, str(Path.cwd().parent))
 from bol_export_file import get_file
 
-config = configparser.ConfigParser()
+config = configparser.ConfigParser(interpolation=None)
 
 try:
     config.read_file(open(Path.home() / "Dropbox" / "MACRO" / "bol_export_files.ini"))
@@ -213,7 +214,7 @@ def set_order_info_in_db(order_infos, info_mail, winkel):
             elif (order_info[-1] is None or int(order_info[-1]) < 3) and winkel == "blok":
                 set_order_info_db_blokker(order_info, info_mail["tt_url"], info_mail["tt_num"])
                 return True
-            elif order_info[-1] >= 3:
+            elif order_info[-1] == 3:
                 logger.info(f'stap 3 {info_mail["dienst"]} {info_mail}{order_info} order already processed')
                 return True
             else:
@@ -223,7 +224,7 @@ def set_order_info_in_db(order_infos, info_mail, winkel):
             set_order_info_db_bol(order_infos, info_mail["tt_url"], info_mail["tt_num"])
         elif (order_infos[-1] is None or int(order_infos[-1]) < 3) and winkel == "blok":
             set_order_info_db_blokker(order_infos, info_mail["tt_url"], info_mail["tt_num"])
-        elif order_infos[-1] >= 3:
+        elif order_infos[-1] == 3:
             logger.info(f'stap 3 {info_mail["dienst"]} {info_mail} {order_infos} order already processed')
         else:
             return False
@@ -796,6 +797,7 @@ def process_transmision_messages(conn):
             continue
 
         try:
+            mail_info["order_num"] = mail_info["order_num"].replace("-","_")
             mail_info["first_name"], *mail_info["last_name"] = [
                 x.strip()
                 for x in re.split(
@@ -960,16 +962,21 @@ def process_dpd_messages(conn):
             logger.error(f"stap 3 dpd {mail_info} failed {e}")
 
     # get send info excellent, so different that i need to do it separate
-    message_treads_ids = get_messages(conn, 'from:(*@dpd.nl | *@dpd.be ) subject:("Je pakket")')
+    message_treads_ids = get_messages(conn, 'from:(*@dpd.nl) subject:("Je pakket")')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        # print(etree.tostring(mail_body, pretty_print=True, encoding='unicode'))
         try:
             mail_info = {
                 "dienst": "dpd",
                 "tt_url": mail_body.xpath(
                     "//img[@alt='Volg je pakket']/../@href | //img[@style='float:right']/../@href"
                 )[0],
+                "tt_num": mail_body.xpath("//td[contains(text(), 'Pakketnummer')]/text()")[0].strip().split('Pakketnummer')[1].strip(),
+                "full_name" : mail_body.xpath("//p[contains(text(), 'op dit adres')]/../b/text()")[0].strip(),
+                "street_house": mail_body.xpath("//p[contains(text(), 'op dit adres')]/../b/text()")[1].strip(),
+                "postcode_plaats" : mail_body.xpath("//p[contains(text(), 'op dit adres')]/../b/text()")[2].strip(),
             }
         except (IndexError, ValueError) as e:
             logger.info(
@@ -979,62 +986,50 @@ def process_dpd_messages(conn):
             add_label_processed_verzending(conn, message_treads_id)
             continue
         try:
-            session = requests.Session()
-            page = session.get(mail_info["tt_url"])
-            page_body = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
-            try:
-                mail_info["tt_num"] = page_body.xpath(
-                    "//p[normalize-space()='DPD-pakketnummer:']/..//span/text() | //p[normalize-space()='DPD zendingsnummer:']/..//span/text()"
-                )[0]
-            except (IndexError, ValueError) as e:
-                try:
-                    crfs = page_body.xpath("//meta[@name='_csrf']/@content")[0]
-                    mail_info["tt_num"] = "".join(
-                        char
-                        for char in mail_body.xpath("//span[contains(text(),'Uw bestelling met pakketnummer')]/text()")[
-                            0
-                        ]
-                        if char in "0123456789"
-                    )
-                    postalcode = (
-                        mail_body.xpath("//span[contains(text(),'*:')]/..//span/text()[last()]")[0]
-                        .strip()
-                        .split(" ", 1)[0]
-                    )
-                    data = {
-                        "_csrf": crfs,
-                        "parcelType": "INCOMING",
-                        "verificationCode": postalcode,
-                        "recaptchaResponse": "",
-                        "number": mail_info["tt_num"],
-                        "shipmentType": "PARCEL_DETAILS",
-                        "validate": "Bevestigen",
-                    }
-                    session.post("https://www.dpdgroup.com/be/mydpd/my-parcels/details/protection", data=data)
-                    page = session.get(
-                        f"https://www.dpdgroup.com/be/mydpd/my-parcels/incoming?parcelNumber={mail_info['tt_num']}"
-                    )
-                    page_body = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
-                except (IndexError, ValueError) as e:
-                    mail_info["tt_num"] = page_body.xpath("//span[@class='parcelAlias']/../span/span//text()")[0]
-                    add_label_processed_verzending(conn, message_treads_id)
-                    continue
-            try:
-                mail_info["full_name"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[2]/text()")[0]
-            except (IndexError, ValueError) as e:
-                mark_read(conn, message_treads_id)
-                add_label_processed_verzending(conn, message_treads_id)
-                logger.error(f"stap 3 dpd {mail_info} failed {e}")
-                break
-            mail_info["street_house"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[3]/text()")[0]
-            mail_info["postcode_plaats"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[4]/text()")[0]
             mail_info["first_name"], *mail_info["last_name"] = mail_info["full_name"].lower().split(" ", 1)
             mail_info["last_name"] = " ".join(mail_info["last_name"])
             *mail_info["street"], mail_info["house_number"] = mail_info["street_house"].split(" ")
             mail_info["street"] = " ".join(mail_info["street"])
             mail_info["postcode"], *mail_info["city"] = re.split(" ", mail_info["postcode_plaats"])
             mail_info["city"] = " ".join(mail_info["city"])
-            mail_info["land"] = page_body.xpath("//p[normalize-space()='Naar:']/../p[5]/text()")
+            get_order_info_db = get_set_info_database(mail_info)
+            if get_order_info_db:
+                mark_read(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id)
+        except Exception as e:
+            logger.error(f"stap 3 dpd {mail_info} failed {e}")
+    # get send info excellent, so different in be that i need to do it separate
+    message_treads_ids = get_messages(conn, 'from:(*@dpd.be ) subject:("Je pakket is")')
+    num = 1
+    for message_treads_id in message_treads_ids:
+        message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
+        mail_body = get_body_email(message)
+        # print(etree.tostring(mail_body, pretty_print=True, encoding='unicode'))
+        try:
+            mail_info = {
+                "dienst": "dpd",
+                "tt_url": mail_body.xpath(
+                    "//img[@alt='Volg je pakket']/../@href | //img[@style='float:right']/../@href"
+                )[0],
+                "tt_num": re.search(r"(\d+)", mail_body.xpath("//span[contains(text(), 'pakketnummer')]/text()")[0]).group(1),
+                "full_name" : mail_body.xpath("//span[text()='leveradres*:']//text()")[1].strip(),
+                "street_house": mail_body.xpath("//span[text()='leveradres*:']//text()")[2].strip(),
+                "postcode_plaats" : mail_body.xpath("//span[text()='leveradres*:']//text()")[3].strip(),
+            }
+        except (IndexError, ValueError) as e:
+            logger.info(
+                f"stap 3 dpd failed because of no tt_link(zoals in bezorgd links), message id {message_treads_id} {e}"
+            )
+            mark_read(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id)
+            continue
+        try:
+            mail_info["first_name"], *mail_info["last_name"] = mail_info["full_name"].lower().split(" ", 1)
+            mail_info["last_name"] = " ".join(mail_info["last_name"])
+            *mail_info["street"], mail_info["house_number"] = mail_info["street_house"].split(" ")
+            mail_info["street"] = " ".join(mail_info["street"])
+            mail_info["postcode"], *mail_info["city"] = re.split(" ", mail_info["postcode_plaats"])
+            mail_info["city"] = " ".join(mail_info["city"])
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
@@ -1195,6 +1190,38 @@ def process_beekman_messages(conn):
             mark_read(conn, message_treads_id)
         add_label_processed_verzending(conn, message_treads_id)
 
+def process_visynet_api():
+    # get still open orders and check if they have aa track and trace
+    query = "SELECT I.orderid,order_orderitemid,order_id_leverancier,shipmentdetails_zipcode,shipmentdetails_countrycode FROM orders_bol O LEFT JOIN orders_info_bol I ON O.orderid = I.orderid WHERE offer_sku LIKE 'VIS%' AND dropship = 1 AND order_id_leverancier IS NOT NULL"
+    with engine.connect() as connection:
+        open_orders = connection.execute(text(query)).fetchall()
+    session = requests.Session()
+    access_token = session.post(
+        config.get("visynet api", "basis_url") + "/auth/requesttoken",
+        data=json.dumps({
+            "email": config.get("visynet api", "email"),
+            "password": config.get("visynet api", "password"),
+        }),
+        headers = {'Content-Type': 'application/json'},
+        timeout=10,
+    ).json()["token"]
+    session.headers.update({"Authorization": f"Bearer {access_token}"})
+    for order_info in open_orders:
+        order_status = session.post("https://api.visynet.be/order/status", json={"orderid" : order_info[2] })
+        if order_status.status_code == 200:
+            if order_status.json()["error_message"]:
+                logger.error(f"{order_info[0]} {order_status.json()['error_message']}")
+            else:
+                if order_status.json()['result']['Carrier']:
+                    if "PostNL" in order_status.json()['result']['Carrier']:
+                        set_order_info_db_bol(order_info, f"https://jouw.postnl.nl/#!/track-en-trace/{order_status.json()['result']['trackingnumber']}/{order_info[4]}/{order_info[3]} ", order_status.json()['result']['trackingnumber'])
+                    elif "GLS" in order_status.json()['result']['Carrier']: 
+                        set_order_info_db_bol(order_info, f"https://gls-group.eu/EU/en/parcel-tracking?match={order_status.json()['result']['trackingnumber']}", order_status.json()['result']['trackingnumber'])
+                    elif "UPS" in order_status.json()['result']['Carrier']:
+                        set_order_info_db_bol(order_info, f"https://www.ups.com/track?loc=nl_NL&{order_status.json()['result']['trackingnumber']}", order_status.json()['result']['trackingnumber'])
+                else:
+                       logger.info(f"{order_info[0]} Nog geen T&T nummer bekend ")     
+
 
 def process_ftp_files_tt_exl(server, login, wachtwoord):
     """Omdat ze deze nu alleen via ftp beschikbaar maken voor dropshipment"""
@@ -1245,11 +1272,11 @@ def gmail_send_mail(
 
         type_info = {
             "waterreservoir": {
-            "type_device": f"{appraat_begin}koffiezetapparaat{appraat_eind} {typeplaatje_begin}onderkant{typeplaatje_midden}{typeplaatje_midden_2}koffiezetapparaat{typeplaatje_eind}",
+            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}onderkant{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind}",
             "afbeelding": "padhouder",
             },
             "padhouder": {
-            "type_device": f"{appraat_begin}koffiezetapparaat{appraat_eind} {typeplaatje_begin}onderkant{typeplaatje_midden}{typeplaatje_midden_2}koffiezetapparaat{typeplaatje_eind} {bijlage_text}",
+            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}onderkant{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind} {bijlage_text}",
             "afbeelding": "padhouder",
             },
             "draaiplateau": {
@@ -1296,9 +1323,8 @@ def gmail_send_mail(
             message.get_payload()[0].add_related(
                 img.read(), maintype=maintype, subtype=subtype, cid=image_cid2, filename=sign_picture
             )
-
-        message["Subject"] = f"Bestelling {waarvoor} {order_id}"
-        # encoded message
+        message["Subject"] = f"Juiste {waarvoor} Besteld ?! {order_id} \U00002705 \U0000274C" #unicode for nice icons https://unicode.org/emoji/charts/full-emoji-list.html
+        # encoded the message
         encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         create_message = {"raw": encoded_message}
         send_message = conn.users().messages().send(userId="me", body=create_message).execute()
@@ -1353,6 +1379,7 @@ if __name__ == "__main__":
     process_dpd_messages(connection)
     process_postnl_ur_messages(connection)
     process_beekman_messages(connection)
+    process_visynet_api()
     process_ftp_files_tt_exl(
         config["excellent dropship tt"]["server"],
         config["excellent dropship tt"]["login"],
@@ -1360,7 +1387,7 @@ if __name__ == "__main__":
     )
 
     # # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
-    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Dolce Gusto Waterreservoir")
+    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Waterreservoir")
     process_bol_orders(connection, product_type="padhouder", zoek_string="padhouder")
     process_bol_orders(connection, product_type="draaiplateau", zoek_string="Draaiplateau")
     process_bol_orders(connection, product_type="deurbak", zoek_string="Deurbak")
