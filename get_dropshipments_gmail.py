@@ -722,7 +722,7 @@ def process_dynalogic_messages(conn):
             ).execute()  # verwerkte mail
             continue
         try:
-            post_land_temp = mail_body.xpath("//span[normalize-space()='Afspraak details']/../text()")[3]
+            post_land_temp = mail_body.xpath("//span[normalize-space()='Afspraak details']/../text()")[-5]
             if "B-" in post_land_temp:
                 mail_info["postcode"], mail_info["city"] = post_land_temp.split(" ", 1)
                 mail_info["postcode"] = mail_info["postcode"].replace("B-", "")
