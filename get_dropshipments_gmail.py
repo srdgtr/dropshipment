@@ -1238,7 +1238,7 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
             parse_xml = et.fromstring(xml_content)
             order_id = parse_xml.find(".//OrderExternalId_01").text
             tt_number = parse_xml.find(".//trackingnumber").text
-            track_en_trace_url = f"https://tracking.dpd.de/parcelstatus?query={tt_number}"
+            track_en_trace_url = parse_xml.find(".//trackingurl").text
             if "_" in order_id:
                 info_bol_db = f"SELECT orderid,order_orderitemid FROM orders_info_bol WHERE orderid = '{order_id}'"
                 with engine.connect() as connection:
