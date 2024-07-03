@@ -1192,7 +1192,7 @@ def process_beekman_messages(conn):
 
 def process_visynet_api():
     # get still open orders and check if they have aa track and trace
-    query = "SELECT I.orderid,order_orderitemid,order_id_leverancier,shipmentdetails_zipcode,shipmentdetails_countrycode FROM orders_bol O LEFT JOIN orders_info_bol I ON O.orderid = I.orderid WHERE offer_sku LIKE 'VIS%' AND dropship = 1 AND order_id_leverancier IS NOT NULL"
+    query = "SELECT I.orderid,order_orderitemid,verkooporder_id_leverancier,shipmentdetails_zipcode,shipmentdetails_countrycode FROM orders_bol O LEFT JOIN orders_info_bol I ON O.orderid = I.orderid WHERE offer_sku LIKE 'VIS%' AND dropship = 1 AND verkooporder_id_leverancier IS NOT NULL"
     with engine.connect() as connection:
         open_orders = connection.execute(text(query)).fetchall()
     session = requests.Session()
@@ -1236,7 +1236,10 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
             ftp.retrlines(f"RETR {file}", file_lines.append)
             xml_content = "\n".join(file_lines)
             parse_xml = et.fromstring(xml_content)
-            order_id = parse_xml.find(".//OrderExternalId_01").text
+            if parse_xml.find(".//carrier_id").text == "DYNALOGIC":
+                order_id = parse_xml.find(".//trackingnumber").text.split("=")[-1]
+            else:
+                order_id = parse_xml.find(".//OrderExternalId_01").text
             tt_number = parse_xml.find(".//trackingnumber").text
             track_en_trace_url = parse_xml.find(".//trackingurl").text
             if "_" in order_id:
@@ -1250,6 +1253,8 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
                     order_line_id = connection.exec_driver_sql(info_blok_db).first()
                 set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
             ftp.delete(file)
+
+    # nog iets verzinnen om de dynlogic orders te verwerken
 
 
 def gmail_send_mail(
