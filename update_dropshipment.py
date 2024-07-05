@@ -18,7 +18,7 @@ from sqlalchemy import (MetaData, Table, and_, create_engine, select, text,
 from sqlalchemy.engine.url import URL
 
 sys.path.insert(0, str(Path.home()))
-from bol_export_file import get_file
+
 
 config = configparser.ConfigParser()
 
@@ -162,25 +162,41 @@ with engine.connect() as connection:
                 order_dict["verzendpartner"] = "DHL"
                 bol_at_depot.append(order_dict)
         elif "postnl" in order_dict['t_t_dropshipment']:
-            shipment_info = requests.get(f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['t_t_dropshipment'].split('/')[-1]}?language=nl").json()
-            observations = shipment_info.get("colli", {}).get(order_dict['order_id_leverancier'], {}).get("observations", [])
-            status = shipment_info.get("colli", {}).get(order_dict['order_id_leverancier'], {}).get("statusPhase", {}).get("message") in ["Pakket is bezorgd", "Zending is gesorteerd"]
+            shipment_info = requests.get(f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['t_t_dropshipment'].split('/')[-1].strip()}?language=nl")
+            if shipment_info.status_code == 500:
+                shipment_info = requests.get(f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['order_id_leverancier']}-{'NL' if 'NL' in order_dict['t_t_dropshipment'] else 'BE' }-{order_dict['shipmentdetails_zipcode']}?language=nl")
+            observations = shipment_info.json().get("colli", {}).get(order_dict['order_id_leverancier'].upper(), {}).get("observations", []) 
+            status = shipment_info.json().get("colli", {}).get(order_dict['order_id_leverancier'].upper(), {}).get("statusPhase", {}).get("message") in ["Pakket is bezorgd", "Zending is gesorteerd","Bezorger is onderweg","Zending is bezorgd in de brievenbus"]
             shipment_on_depot = any(observation.get("description") == "Zending is gesorteerd" for observation in observations)
             if shipment_on_depot or status:
                 order_dict["verzendpartner"] = "TNT"
                 bol_at_depot.append(order_dict)
         elif "dpd" in order_dict['t_t_dropshipment']:
-            response = requests.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['order_id_leverancier']}")
-            if response.headers.get('Content-Type').startswith('application/json'):
-                shipment_info = response.json()
-                try:
-                    status_info = shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
-                    shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
-                except AttributeError:
-                    shipment_on_depot = None
-                if shipment_on_depot:
-                    order_dict["verzendpartner"] = "DPD-NL"
-                    bol_at_depot.append(order_dict)
+            if "nl" in order_dict['t_t_dropshipment']:
+                response = requests.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['order_id_leverancier']}")
+                if response.headers.get('Content-Type').startswith('application/json'):
+                    shipment_info = response.json()
+                    try:
+                        status_info = shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
+                        shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
+                    except AttributeError:
+                        shipment_on_depot = None
+                    if shipment_on_depot:
+                        order_dict["verzendpartner"] = "DPD-NL"
+                        bol_at_depot.append(order_dict)
+            if "be" in order_dict['t_t_dropshipment']:
+                # session = requests.Session()
+                # headers = {
+                # '_csrf': 'fa2026e1-c9c6-41b5-aa5b-6657b7aee87c',
+                # 'searchShipmentSourcePage': 'INCOMING',
+                # 'value': order_dict['order_id_leverancier']
+                # }
+                # session.get("https://www.dpdgroup.com/be/mydpd/my-parcels/incoming")
+                # session.post("https://www.dpdgroup.com/be/mydpd/my-parcels/search", headers=headers)
+                # response = session.get(f"https://www.dpdgroup.com/be/mydpd/my-parcels/incoming?parcelNumber={order_dict['order_id_leverancier']}")
+                # page_body = etree.parse(io.BytesIO(response.content), etree.HTMLParser())
+                # print(page_body.xpath("//meta[@name='_csrf']/text"))
+                pass
             else:
                 logger.info(f"niet bekend bij api dpd,{order_dict['t_t_dropshipment']}")
         elif "trans-mission" in order_dict['t_t_dropshipment']:
@@ -206,6 +222,14 @@ with engine.connect() as connection:
                 if shipment_info['data']['ActiveStep'] >= 3:
                     order_dict["verzendpartner"] = "DYL"
                     bol_at_depot.append(order_dict)
+        elif "gls" in order_dict['t_t_dropshipment']:
+            response = requests.get(f"https://gls-group.eu/app/service/open/rest/GROUP/en/rstt029?match={order_dict['order_id_leverancier']}")
+            shipment_info = response.json() 
+            if shipment_info['tuStatus'][0]["progressBar"]["colourIndex"] >= 3:
+                order_dict["verzendpartner"] = "GLS"
+                bol_at_depot.append(order_dict)
+            else:
+                logger.info(f"nog niet verwerkt door gls,{order_dict['t_t_dropshipment']}")
 
 
 def custom_sort(item):
