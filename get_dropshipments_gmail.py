@@ -1386,7 +1386,7 @@ def process_bol_orders(conn, product_type, zoek_string):
 def process_if_replays_juiste_product(conn):
     message_treads_ids = get_messages(
         conn,
-        f'to:*@vangilsweb.nl OR to:*@toopbv.nl subject:"Re: Juiste"',
+        f'to:*@vangilsweb.nl OR to:*@toopbv.nl OR to:toopbv@gmail.com subject:"Re: Juiste"',
         gewenste_aantal_dagen="5d",
     )
     for message_treads_id in message_treads_ids:
