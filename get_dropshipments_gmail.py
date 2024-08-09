@@ -169,6 +169,17 @@ def set_mailsend_db_bol(order_info):
     with engine.begin() as conn:
         conn.execute(mail_send)
 
+def set_replay_mailsend_db_bol(order_info):
+    orders_info_bol = Table("orders_info_bol", metadata, autoload_with=engine)
+    logger.info(f"info {order_info} mail reply is received ")
+    mail_send = (
+        update(orders_info_bol)
+        .where(orders_info_bol.columns.orderid == order_info)
+        .values(extra_info_replay_mail_ontvangen=True)
+    )
+    with engine.begin() as conn:
+        conn.execute(mail_send)
+
 def get_body_email(mess):
     try:
         body = base64.urlsafe_b64decode(mess["payload"]["body"]["data"].encode("UTF8"))
@@ -1372,6 +1383,18 @@ def process_bol_orders(conn, product_type, zoek_string):
             add_label_processed_return(conn, message_treads_id)
             set_mailsend_db_bol(odin_order_nr)
 
+def process_if_replays_juiste_product(conn):
+    message_treads_ids = get_messages(
+        conn,
+        f'to:*@vangilsweb.nl OR to:*@toopbv.nl subject:"Re: Juiste"',
+        gewenste_aantal_dagen="5d",
+    )
+    for message_treads_id in message_treads_ids:
+        message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
+        headers = message["payload"]["headers"]
+        order_nr = re.search(r"\d+_\w+", [i["value"] for i in headers if i["name"] == "Subject"][0].rsplit(":")[-1]).group()
+        set_replay_mailsend_db_bol(order_nr)
+        add_label_processed_verzending(conn, message_treads_id)
 
 if __name__ == "__main__":
     credentials = get_autorisation_gooogle_api()
@@ -1398,3 +1421,5 @@ if __name__ == "__main__":
     process_bol_orders(connection, product_type="deurbak", zoek_string="Deurbak")
     process_bol_orders(connection, product_type="groentelade", zoek_string="Groentelade")
     process_bol_orders(connection, product_type="flessenrek", zoek_string="Flessenrek")
+
+    process_if_replays_juiste_product(connection)

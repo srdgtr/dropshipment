@@ -172,7 +172,7 @@ with engine.connect() as connection:
                 order_dict["verzendpartner"] = "TNT"
                 bol_at_depot.append(order_dict)
         elif "dpd" in order_dict['t_t_dropshipment']:
-            if "nl" in order_dict['t_t_dropshipment']:
+            if "nl" in order_dict['t_t_dropshipment'] or "DE" in order_dict['t_t_dropshipment']:
                 response = requests.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['order_id_leverancier']}")
                 if response.headers.get('Content-Type').startswith('application/json'):
                     shipment_info = response.json()
