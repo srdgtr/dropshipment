@@ -1214,6 +1214,7 @@ def process_visynet_api():
             "password": config.get("visynet api", "password"),
         }),
         headers = {'Content-Type': 'application/json'},
+        verify=False,
         timeout=10,
     ).json()["token"]
     session.headers.update({"Authorization": f"Bearer {access_token}"})
@@ -1258,12 +1259,14 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
                 with engine.connect() as connection:
                     order_info = connection.exec_driver_sql(info_bol_db).first()
                 set_order_info_db_bol(order_info, track_en_trace_url, tt_number)
+                logger.info(f"{order_info} order bol tt exellent toegevoegd ")  
             elif "-" in order_id:
                 info_blok_db = f"SELECT I.order_line_id FROM blokker_orders O LEFT JOIN blokker_order_items I ON O.commercialid = I.commercialid WHERE order_id = '{order_id}'"
                 with engine.connect() as connection:
                     order_line_id = connection.exec_driver_sql(info_blok_db).first()
                 set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
-            ftp.delete(file)
+                logger.info(f"{order_info} order blokker tt exellent toegevoegd ") 
+            # ftp.delete(file)
 
     # nog iets verzinnen om de dynlogic orders te verwerken
 
@@ -1281,7 +1284,7 @@ def gmail_send_mail(
         bijlage_text = "<br><br>In de bijlage sturen wij een afbeelding mee van de meest voorkomende plaatsen waar u het typenummer kunt vinden op uw apparaat.<br><br>"
         appraat_begin = f"U heeft bij ons een {waarvoor} besteld voor uw "
         appraat_eind = f". Nu blijkt uit ervaring dat er vaak wat onduidelijkheid heerst over het type {waarvoor} dat er nodig is.<br>"
-        typeplaatje_begin = f"Mocht u twijfelen of u het juiste exemplaar heeft besteld, willen wij u vragen om een foto te maken van het typeplaatje dat op uw apparaat staat. In sommige gevallen zit er geen typeplaatje op het apparaat maar staat het typenummer in het apparaat zelf gedrukt. Het typeplaatje vindt u meestal aan de "
+        typeplaatje_begin = "Mocht u twijfelen of u het juiste exemplaar heeft besteld, willen wij u vragen om een foto te maken van het typeplaatje dat op uw apparaat staat. In sommige gevallen zit er geen typeplaatje op het apparaat maar staat het typenummer in het apparaat zelf gedrukt. Het typeplaatje vindt u meestal aan de "
         typeplaatje_midden = " van uw apparaat"
         typeplaatje_midden_2 = "en bestaat uit een combinatie van letters en cijfers. Let op! Ook de cijfers na het /-teken zijn belangrijk. Een foto van uw "
         typeplaatje_eind = f" of {waarvoor} is niet voldoende om het typenummer te achterhalen. <br> <br>"
@@ -1415,10 +1418,13 @@ if __name__ == "__main__":
     )
 
     # # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
-    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Waterreservoir")
+    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher ")
+    # process_bol_orders(connection, product_type="waterreservoir", zoek_string="Watertank Reservoir")
     process_bol_orders(connection, product_type="padhouder", zoek_string="padhouder")
+    process_bol_orders(connection, product_type="padhouder", zoek_string="Capsule houder")
     process_bol_orders(connection, product_type="draaiplateau", zoek_string="Draaiplateau")
     process_bol_orders(connection, product_type="deurbak", zoek_string="Deurbak")
+    process_bol_orders(connection, product_type="deurbak", zoek_string="Deurvak")
     process_bol_orders(connection, product_type="groentelade", zoek_string="Groentelade")
     process_bol_orders(connection, product_type="flessenrek", zoek_string="Flessenrek")
 
