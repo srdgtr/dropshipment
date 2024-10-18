@@ -133,18 +133,21 @@ def gmail_create_connection(login):
 def set_order_info_db_bol(order_info, track_en_trace_url, track_en_trace_num):
     orders_info_bol = Table("orders_info_bol", metadata, autoload_with=engine)
     logger.info(f"start stap 3 bol {order_info}")
-    drop_send = (
-        update(orders_info_bol)
-        .where(
-            and_(
-                orders_info_bol.columns.orderid == order_info[0],
-                orders_info_bol.columns.order_orderitemid == order_info[1],
+    if order_info:
+        drop_send = (
+            update(orders_info_bol)
+            .where(
+                and_(
+                    orders_info_bol.columns.orderid == order_info[0],
+                    orders_info_bol.columns.order_orderitemid == order_info[1],
+                )
             )
+            .values(dropship="3", t_t_dropshipment=track_en_trace_url, order_id_leverancier=track_en_trace_num)
         )
-        .values(dropship="3", t_t_dropshipment=track_en_trace_url, order_id_leverancier=track_en_trace_num)
-    )
-    with engine.begin() as conn:
-        conn.execute(drop_send)
+        with engine.begin() as conn:
+            conn.execute(drop_send)
+    else:
+        logger.info(f"start stap 3 bol failed no order_info {track_en_trace_url} ")
 
 
 def set_order_info_db_blokker(order_info, track_en_trace_url, track_en_trace_num):
@@ -1219,7 +1222,7 @@ def process_visynet_api():
     ).json()["token"]
     session.headers.update({"Authorization": f"Bearer {access_token}"})
     for order_info in open_orders:
-        order_status = session.post("https://api.visynet.be/order/status", json={"orderid" : order_info[2] })
+        order_status = session.post("https://api.visynet.be/order/status", json={"orderid" : order_info[2] }, verify=False)
         if order_status.status_code == 200:
             if order_status.json()["error_message"]:
                 logger.error(f"{order_info[0]} {order_status.json()['error_message']}")
@@ -1266,7 +1269,7 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
                     order_line_id = connection.exec_driver_sql(info_blok_db).first()
                 set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
                 logger.info(f"{order_info} order blokker tt exellent toegevoegd ") 
-            # ftp.delete(file)
+            ftp.delete(file)
 
     # nog iets verzinnen om de dynlogic orders te verwerken
 
@@ -1325,10 +1328,12 @@ def gmail_send_mail(
         if kvk_winkel == "toopbv":
             message["From"] = "toopbv@gmail.com"
             sign_picture = "toop.png"
+            naam_shop = "toop"
         elif kvk_winkel == "vangilsweb":
             message["From"] = "info@vangilsweb.nl"
             sign_picture = "vangils.jpg"
-        message.add_alternative(f"<html><body>{standaard_begin_text}{info['type_device']} Voor 'same day delivery' orders hebben wij deze informatie voor 9.00 uur in de ochtend nodig om uw bestelling nog aan de kunnen passen. Voor 'next day delivery' orders hebben wij deze informatie voor 15.00 uur nodig.{standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='voorbeeld_afbeelding'> <br> <br> <img src='cid:{image_cid2[1:-1]}' alt='ons logo'></body></html>",subtype="html",)
+            naam_shop = "vangils web" 
+        message.add_alternative(f"<html><body>{standaard_begin_text}{info['type_device']} Voor 'same day delivery' orders hebben wij deze informatie voor 9.00 uur in de ochtend nodig om uw bestelling nog aan de kunnen passen. Voor 'next day delivery' orders hebben wij deze informatie voor 15.00 uur nodig.{standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='https://toop.nl/uitleg.html'> <br> <br> <img src='cid:{image_cid2[1:-1]}' alt={naam_shop}></body></html>",subtype="html",)
 
         with open(f"afbeelding_met_uitleg_{info['afbeelding']}.png", "rb") as img:
             maintype, subtype = mimetypes.guess_type(img.name)[0].split("/")
@@ -1360,12 +1365,13 @@ def process_bol_orders(conn, product_type, zoek_string):
     message_treads_ids = get_messages(
         conn,
         f'to:*@vangilsweb.nl OR to:*@toopbv.nl subject:"Nieuwe bestelling:" {zoek_string}',
-        gewenste_aantal_dagen="2d",
+        gewenste_aantal_dagen="1d",
     )
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         headers = message["payload"]["headers"]
-        order_nr = re.search(r"\d+", [i["value"] for i in headers if i["name"] == "Subject"][0].rsplit(":")[-1]).group()
+        order_nr = re.search(r"bestelnummer:\s*([A-Za-z0-9-]+)", [i["value"] for i in headers if i["name"] == "Subject"][0]).group(1).replace("-","")
+
         try:
             _, webwinkel, to, _ = re.split("[@ .]", [i["value"] for i in headers if i["name"] == "To"][0])
         except ValueError as e:
@@ -1419,7 +1425,7 @@ if __name__ == "__main__":
 
     # # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
     process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher ")
-    # process_bol_orders(connection, product_type="waterreservoir", zoek_string="Watertank Reservoir")
+    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Waterreservoir")
     process_bol_orders(connection, product_type="padhouder", zoek_string="padhouder")
     process_bol_orders(connection, product_type="padhouder", zoek_string="Capsule houder")
     process_bol_orders(connection, product_type="draaiplateau", zoek_string="Draaiplateau")
