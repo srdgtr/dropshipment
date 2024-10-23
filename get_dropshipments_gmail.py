@@ -1401,7 +1401,7 @@ def process_if_replays_juiste_product(conn):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         headers = message["payload"]["headers"]
-        order_nr = re.search(r"\d+_\w+", [i["value"] for i in headers if i["name"] == "Subject"][0].rsplit(":")[-1]).group()
+        order_nr = re.search(r"\?\!\s*(.*?)\s*✅", [i["value"] for i in headers if i["name"] == "Subject"][0].rsplit(":")[-1]).group(1)
         set_replay_mailsend_db_bol(order_nr)
         add_label_processed_verzending(conn, message_treads_id)
 

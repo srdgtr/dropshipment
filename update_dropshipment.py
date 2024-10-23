@@ -9,13 +9,14 @@ from lxml import etree
 from pathlib import Path
 import time
 
+import requests
+from sqlalchemy import MetaData, Table, and_, create_engine, select, text, update
+from sqlalchemy.engine.url import URL
+
+
 def install(package):
     subprocess.call([sys.executable, "-m", "pip", "install", package])
 
-import requests
-from sqlalchemy import (MetaData, Table, and_, create_engine, select, text,
-                        update)
-from sqlalchemy.engine.url import URL
 
 sys.path.insert(0, str(Path.home()))
 
@@ -46,18 +47,24 @@ logging.basicConfig(
 logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 
-def order_send_into_uploaded_to_bol(orderid,orderitemid):
+def order_send_into_uploaded_to_bol(orderid, orderitemid):
     orders_info_bol = Table("orders_info_bol", metadata, autoload_with=engine)
     logger.info(f"start stap 3 bol {orderid}")
     drop_send = (
         update(orders_info_bol)
-        .where(and_(orders_info_bol.columns.orderid == orderid, orders_info_bol.columns.order_orderitemid == orderitemid))
+        .where(
+            and_(
+                orders_info_bol.columns.orderid == orderid,
+                orders_info_bol.columns.order_orderitemid == orderitemid,
+            )
+        )
         .values(order_droped_tt_to_bol=1)
     )
     with engine.begin() as conn:
         conn.execute(drop_send)
 
-#blokker nog een keer regelen
+
+# blokker nog een keer regelen
 # def set_order_info_db_blokker(order_info, track_en_trace_url, track_en_trace_num):
 #     orders_info_blokker = Table("blokker_order_items", metadata, autoload_with=engine)
 #     logger.info(f"start stap 3 blokker {order_info}")
@@ -68,6 +75,7 @@ def order_send_into_uploaded_to_bol(orderid,orderitemid):
 #     )
 #     with engine.begin() as conn:
 #         conn.execute(drop_send)
+
 
 class BOL_API:
     host = None
@@ -122,9 +130,11 @@ class BOL_API:
 
             return wrapper
 
+
 niet_verwerkte_bol_dropship_orders = "SELECT I.orderid,I.order_orderitemid,O.shipmentdetails_zipcode,I.dropship,I.order_id_leverancier,I.t_t_dropshipment FROM orders_info_bol I LEFT JOIN orders_bol O ON I.orderid = O.orderid WHERE I.t_t_dropshipment > 1 < 4 AND I.order_droped_tt_to_bol IS NULL AND O.active_order = 1 ORDER BY O.updated_on DESC"
 
-def send_request_shiping_info_to_bol(self, verzender_drop, tt_num, bol_order_item,order_id):
+
+def send_request_shiping_info_to_bol(self, verzender_drop, tt_num, bol_order_item, order_id):
     url = "https://api.bol.com/retailer/shipments"
     transport_info_dict_bol = {
         "orderItems": [{"orderItemId": bol_order_item}],
@@ -138,7 +148,7 @@ def send_request_shiping_info_to_bol(self, verzender_drop, tt_num, bol_order_ite
             time.sleep(2)
             result = requests.request("GET", url, headers=self.access_token).json()
             if result["status"] == "SUCCESS":
-                order_send_into_uploaded_to_bol(order_id,bol_order_item)
+                order_send_into_uploaded_to_bol(order_id, bol_order_item)
                 break
             elif result["status"] == "FAILURE":
                 logger.error(f"no succes message {result['errorMessage']} {url}")
@@ -153,38 +163,67 @@ with engine.connect() as connection:
     verzending_open_bol = connection.exec_driver_sql(niet_verwerkte_bol_dropship_orders)
     for order in verzending_open_bol:
         order_dict = dict(order._mapping)
-        if "dhl" in order_dict['t_t_dropshipment']:
-            shipment_info = requests.get(f"https://api-gw.dhlparcel.nl/track-trace?key={order_dict['order_id_leverancier']}%2B{order_dict['shipmentdetails_zipcode']}").json()[0]
-            shipment_on_depot = any(event.get('status') == "PARCEL_ARRIVED_AT_LOCAL_DEPOT" for event in shipment_info['events'])
-            if datetime.date.today() == datetime.datetime.strptime(shipment_info.get('plannedDeliveryTimeframe')[:10], "%Y-%m-%d").date() if shipment_info.get('plannedDeliveryTimeframe') else None:
+        if "dhl" in order_dict["t_t_dropshipment"]:
+            shipment_info = requests.get(
+                f"https://api-gw.dhlparcel.nl/track-trace?key={order_dict['order_id_leverancier']}%2B{order_dict['shipmentdetails_zipcode']}"
+            ).json()[0]
+            shipment_on_depot = any(
+                event.get("status") == "PARCEL_ARRIVED_AT_LOCAL_DEPOT" for event in shipment_info["events"]
+            )
+            if (
+                datetime.date.today()
+                == datetime.datetime.strptime(shipment_info.get("plannedDeliveryTimeframe")[:10], "%Y-%m-%d").date()
+                if shipment_info.get("plannedDeliveryTimeframe")
+                else None
+            ):
                 shipment_on_depot = True
             if shipment_on_depot:
                 order_dict["verzendpartner"] = "DHL"
                 bol_at_depot.append(order_dict)
-        elif "postnl" in order_dict['t_t_dropshipment']:
-            shipment_info = requests.get(f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['t_t_dropshipment'].split('/')[-1].strip()}?language=nl")
+        elif "postnl" in order_dict["t_t_dropshipment"]:
+            shipment_info = requests.get(
+                f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['t_t_dropshipment'].split('/')[-1].strip()}?language=nl"
+            )
             if shipment_info.status_code == 500:
-                shipment_info = requests.get(f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['order_id_leverancier']}-{'NL' if 'NL' in order_dict['t_t_dropshipment'] else 'BE' }-{order_dict['shipmentdetails_zipcode']}?language=nl")
-            observations = shipment_info.json().get("colli", {}).get(order_dict['order_id_leverancier'].upper(), {}).get("observations", []) 
-            status = shipment_info.json().get("colli", {}).get(order_dict['order_id_leverancier'].upper(), {}).get("statusPhase", {}).get("message") in ["Pakket is bezorgd", "Zending is gesorteerd","Bezorger is onderweg","Zending is bezorgd in de brievenbus"]
-            shipment_on_depot = any(observation.get("description") == "Zending is gesorteerd" for observation in observations)
+                shipment_info = requests.get(
+                    f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['order_id_leverancier']}-{'NL' if 'NL' in order_dict['t_t_dropshipment'] else 'BE' }-{order_dict['shipmentdetails_zipcode']}?language=nl"
+                )
+            observations = (
+                shipment_info.json()
+                .get("colli", {})
+                .get(order_dict["order_id_leverancier"].upper(), {})
+                .get("observations", [])
+            )
+            status = shipment_info.json().get("colli", {}).get(order_dict["order_id_leverancier"].upper(), {}).get(
+                "statusPhase", {}
+            ).get("message") in [
+                "Pakket is bezorgd",
+                "Zending is gesorteerd",
+                "Bezorger is onderweg",
+                "Zending is bezorgd in de brievenbus",
+            ]
+            shipment_on_depot = any(
+                observation.get("description") == "Zending is gesorteerd" for observation in observations
+            )
             if shipment_on_depot or status:
                 order_dict["verzendpartner"] = "TNT"
                 bol_at_depot.append(order_dict)
-        elif "dpd" in order_dict['t_t_dropshipment']:
-            if "nl" in order_dict['t_t_dropshipment'] or "DE" in order_dict['t_t_dropshipment']:
-                response = requests.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['order_id_leverancier']}")
-                if response.headers.get('Content-Type').startswith('application/json'):
+        elif "dpd" in order_dict["t_t_dropshipment"]:
+            if "nl" in order_dict["t_t_dropshipment"] or "DE" in order_dict["t_t_dropshipment"]:
+                response = requests.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict["t_t_dropshipment"].split("/")[-1][:-1]}")
+                if response.headers.get("Content-Type").startswith("application/json"):
                     shipment_info = response.json()
                     try:
-                        status_info = shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
+                        status_info = (
+                            shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
+                        )
                         shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
                     except AttributeError:
                         shipment_on_depot = None
                     if shipment_on_depot:
                         order_dict["verzendpartner"] = "DPD-NL"
                         bol_at_depot.append(order_dict)
-            if "be" in order_dict['t_t_dropshipment']:
+            # if "be" in order_dict["t_t_dropshipment"]:
                 # session = requests.Session()
                 # headers = {
                 # '_csrf': 'fa2026e1-c9c6-41b5-aa5b-6657b7aee87c',
@@ -196,36 +235,50 @@ with engine.connect() as connection:
                 # response = session.get(f"https://www.dpdgroup.com/be/mydpd/my-parcels/incoming?parcelNumber={order_dict['order_id_leverancier']}")
                 # page_body = etree.parse(io.BytesIO(response.content), etree.HTMLParser())
                 # print(page_body.xpath("//meta[@name='_csrf']/text"))
-                pass
+                # pass
             else:
                 logger.info(f"niet bekend bij api dpd,{order_dict['t_t_dropshipment']}")
-        elif "trans-mission" in order_dict['t_t_dropshipment']:
-            page = requests.get(order_dict['t_t_dropshipment'])
+        elif "trans-mission" in order_dict["t_t_dropshipment"]:
+            page = requests.get(order_dict["t_t_dropshipment"])
             page_body = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
-            shipment_on_depot = next((text for text in page_body.xpath("//td[contains(text(),'In bestelling')]/text()|//td[contains(text(),'Aflever Scan')]/text()") if any(keyword in text for keyword in ["In bestelling", "Aflever Scan"])), None)
+            shipment_on_depot = next(
+                (
+                    text
+                    for text in page_body.xpath(
+                        "//td[contains(text(),'In bestelling')]/text()|//td[contains(text(),'Aflever Scan')]/text()"
+                    )
+                    if any(keyword in text for keyword in ["In bestelling", "Aflever Scan"])
+                ),
+                None,
+            )
             if shipment_on_depot:
                 order_dict["verzendpartner"] = "TRANSMISSION"
                 bol_at_depot.append(order_dict)
             else:
                 logger.info(f"nog niet verwerkt door transmission,{order_dict['t_t_dropshipment']}")
-        elif "dynalogic" in order_dict['t_t_dropshipment']:
+        elif "dynalogic" in order_dict["t_t_dropshipment"]:
             headers = {
-                'Referer': 'https://track.mydynalogic.eu/track/order',
-                'X-Auth-Token': 'dyna:6507f86f6f3a1',
-                'X-Requested-With': 'XMLHttpRequest'
+                "Referer": "https://track.mydynalogic.eu/track/order",
+                "X-Auth-Token": "dyna:6507f86f6f3a1",
+                "X-Requested-With": "XMLHttpRequest",
             }
-            response = requests.get(f"https://track.mydynalogic.eu/api/transportorder/full/ordernumber/{order_dict['order_id_leverancier']}/zipcode/{order_dict['shipmentdetails_zipcode']}", headers=headers)
-            if response.headers.get('Content-Type').startswith('application/json'):
+            response = requests.get(
+                f"https://track.mydynalogic.eu/api/transportorder/full/ordernumber/{order_dict['order_id_leverancier']}/zipcode/{order_dict['shipmentdetails_zipcode']}",
+                headers=headers,
+            )
+            if response.headers.get("Content-Type").startswith("application/json"):
                 shipment_info = response.json()
-                if len(order_dict['order_id_leverancier']) > 1:
-                    order_dict['order_id_leverancier'] = order_dict['order_id_leverancier'].split(' ', 1)[-1]
-                if shipment_info['data']['ActiveStep'] >= 3:
+                if len(order_dict["order_id_leverancier"]) > 1:
+                    order_dict["order_id_leverancier"] = order_dict["order_id_leverancier"].split(" ", 1)[-1]
+                if shipment_info["data"]["ActiveStep"] >= 3:
                     order_dict["verzendpartner"] = "DYL"
                     bol_at_depot.append(order_dict)
-        elif "gls" in order_dict['t_t_dropshipment']:
-            response = requests.get(f"https://gls-group.eu/app/service/open/rest/GROUP/en/rstt029?match={order_dict['order_id_leverancier']}")
-            shipment_info = response.json() 
-            if shipment_info['tuStatus'][0]["progressBar"]["colourIndex"] >= 3:
+        elif "gls" in order_dict["t_t_dropshipment"]:
+            response = requests.get(
+                f"https://gls-group.eu/app/service/open/rest/GROUP/en/rstt029?match={order_dict['order_id_leverancier']}"
+            )
+            shipment_info = response.json()
+            if shipment_info["tuStatus"][0]["progressBar"]["colourIndex"] >= 3:
                 order_dict["verzendpartner"] = "GLS"
                 bol_at_depot.append(order_dict)
             else:
@@ -233,13 +286,20 @@ with engine.connect() as connection:
 
 
 def custom_sort(item):
-    return item['orderid'][-2:]
+    return item["orderid"][-2:]
+
 
 bol_at_depot_sorted = sorted(bol_at_depot, key=custom_sort)
 
-winkel = {"all_day_elektro": "ADE", "toop_bv": "TB", "tp_shopper": "TS", "typisch_elektro": "TE"}
+winkel = {
+    "all_day_elektro": "ADE",
+    "toop_bv": "TB",
+    "tp_shopper": "TS",
+    "typisch_elektro": "TE",
+}
 config = configparser.ConfigParser()
 config.read(Path.home() / "bol_export_files.ini")
+
 
 def send_info_bol():
     for order in bol_at_depot:
@@ -247,7 +307,13 @@ def send_info_bol():
             if short_shop == order["orderid"].split("_")[-1]:
                 client_id, client_secret, _, _ = [x.strip() for x in config.get("bol_winkels_api", shop).split(",")]
         bol_auth = BOL_API(config["bol_api_urls"]["authorize_url"], client_id, client_secret)
-        send_request_shiping_info_to_bol(bol_auth, order["verzendpartner"], order["order_id_leverancier"], order["order_orderitemid"],order["orderid"])
+        send_request_shiping_info_to_bol(
+            bol_auth,
+            order["verzendpartner"],
+            order["order_id_leverancier"],
+            order["order_orderitemid"],
+            order["orderid"],
+        )
+
 
 send_info_bol()
-
