@@ -13,12 +13,9 @@ from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
 from ftplib import FTP
+import httpx
 import lxml.etree as et
-
-import requests
-
-# from bs4 import BeautifulSoup
-from MySQLdb import OperationalError
+from MySQLdb import OperationalError # pip install mysqlclient op windows
 
 
 def install(package):
@@ -561,7 +558,7 @@ def process_bpost_messages(conn):
                 )
             ]
             post_id = mail_info["tt_url"].split("itemCode=")[1].split("&")[0]
-            bpost_api_info = requests.get(f"https://track.bpost.cloud/track/items?itemIdentifier={post_id}").json()[
+            bpost_api_info = httpx.get(f"https://track.bpost.cloud/track/items?itemIdentifier={post_id}").json()[
                 "items"
             ][0]
             mail_info["first_name"], *mail_info["last_name"] = bpost_api_info["receiver"]["name"].lower().split()
@@ -674,7 +671,7 @@ def process_dhl_messages(conn):
                         mark_read(conn, message_treads_id)
                         add_label_processed_verzending(conn, message_treads_id)
                         continue
-            dhl_api_info = requests.get(
+            dhl_api_info = httpx.get(
                 f"https://api-gw.dhlparcel.nl/track-trace?key={trace_nr}%2B{postal_code}"
             ).json()[0]
             mail_info["first_name"], *mail_info["last_name"] = dhl_api_info["receiver"]["name"].split()
@@ -748,7 +745,7 @@ def process_dynalogic_messages(conn):
                 if len(mail_info["postcode_cijfers"]) > 4:
                     mail_info["postcode"], *mail_info["city"] = post_land_temp.split(" ", 2)
                 mail_info["city"] = " ".join(mail_info["city"])
-            dynalogic_api_info = requests.get(
+            dynalogic_api_info = httpx.get(
                 f"https://track.mydynalogic.eu/api/transportorder/full/ordernumber/{mail_info['tt_num']}/zipcode/{mail_info['postcode']}",
                 headers={"referer": "https://track.mydynalogic.eu/track/order", "X-Requested-With": "XMLHttpRequest"},
             ).json()
@@ -801,7 +798,7 @@ def process_transmision_messages(conn):
             ).execute()  # verwerkte mail
             continue
         try:
-            page = requests.get(mail_info["tt_url"])
+            page = httpx.get(mail_info["tt_url"])
             page_body = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
             mail_info["tt_num"] = page_body.xpath(
                 "//label[@title='Uniek zendingnummer bij TransMission']/../span[1]/text()"
@@ -1065,7 +1062,7 @@ def process_postnl_ur_messages(conn):
         try:
             mail_info["tt_num"] = mail_info["tt_url"].split("/")[-1].split("-")[0]
             postnl_api_info = (
-                requests.get(
+                httpx.get(
                     f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{mail_info['tt_url'].split('/')[-1]}?language=nl"
                 )
                 .json()["colli"]
@@ -1150,7 +1147,7 @@ def process_beekman_messages(conn):
             mail_info["tt_num"] = mail_info["tt_url"].split("/")[-1].split("-")[0]
             try:
                 postnl_api_info = (
-                    requests.get(
+                    httpx.get(
                         f"{mail_info['tt_url'].replace('track-and-trace','track-and-trace/api/trackAndTrace')}?language=nl"
                     )
                     .json()["colli"]
@@ -1175,7 +1172,7 @@ def process_beekman_messages(conn):
         elif postorg == "DHL Parcel":
             postal_code = tt_page.xpath("//address//text()[3]")[0].strip().split(" ", 1)[0]
             mail_info["tt_num"] = re.split(r"[=&]", mail_info["tt_url"])[1]
-            response = requests.get(
+            response = httpx.get(
                 f"https://api-gw.dhlparcel.nl/track-trace?key={mail_info['tt_num']}%2B{postal_code}"
             )
             if response.status_code == 200:
@@ -1205,11 +1202,11 @@ def process_beekman_messages(conn):
         add_label_processed_verzending(conn, message_treads_id)
 
 def process_visynet_api():
-    # get still open orders and check if they have aa track and trace
+    # get still open orders and check if they have a track and trace
     query = "SELECT I.orderid,order_orderitemid,verkooporder_id_leverancier,shipmentdetails_zipcode,shipmentdetails_countrycode FROM orders_bol O LEFT JOIN orders_info_bol I ON O.orderid = I.orderid WHERE offer_sku LIKE 'VIS%' AND dropship = 1 AND verkooporder_id_leverancier IS NOT NULL"
     with engine.connect() as connection:
         open_orders = connection.execute(text(query)).fetchall()
-    session = requests.Session()
+    session = httpx.Client(verify=False)
     access_token = session.post(
         config.get("visynet api", "basis_url") + "/auth/requesttoken",
         data=json.dumps({
@@ -1217,7 +1214,6 @@ def process_visynet_api():
             "password": config.get("visynet api", "password"),
         }),
         headers = {'Content-Type': 'application/json'},
-        verify=False,
         timeout=10,
     ).json()["token"]
     session.headers.update({"Authorization": f"Bearer {access_token}"})
@@ -1416,7 +1412,6 @@ if __name__ == "__main__":
     process_dpd_messages(connection)
     process_postnl_ur_messages(connection)
     process_beekman_messages(connection)
-    process_visynet_api()
     process_ftp_files_tt_exl(
         config["excellent dropship tt"]["server"],
         config["excellent dropship tt"]["login"],
@@ -1435,3 +1430,5 @@ if __name__ == "__main__":
     process_bol_orders(connection, product_type="flessenrek", zoek_string="Flessenrek")
 
     process_if_replays_juiste_product(connection)
+
+    process_visynet_api()

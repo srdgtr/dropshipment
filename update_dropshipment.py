@@ -4,12 +4,12 @@ import configparser
 import logging
 import datetime
 import io
+import httpx
 from lxml import etree
 
 from pathlib import Path
 import time
 
-import requests
 from sqlalchemy import MetaData, Table, and_, create_engine, select, text, update
 from sqlalchemy.engine.url import URL
 
@@ -103,7 +103,7 @@ class BOL_API:
         # request the JWT
         try:
             # request an access token
-            init_request = requests.post(self.host, auth=(self.key, self.secret))
+            init_request = httpx.post(self.host, auth=(self.key, self.secret))
             init_request.raise_for_status()
         except Exception as e:
             print(e)
@@ -141,12 +141,12 @@ def send_request_shiping_info_to_bol(self, verzender_drop, tt_num, bol_order_ite
         "shipmentReference": None,
         "transport": {"transporterCode": verzender_drop, "trackAndTrace": tt_num},
     }
-    response = requests.request("POST", url, headers=self.access_token, json=transport_info_dict_bol)
+    response = httpx.request("POST", url, headers=self.access_token, json=transport_info_dict_bol)
     if response.status_code == 202:
         url = f"https://api.bol.com/shared/process-status/{response.json()['processStatusId']}"
         for _ in range(10):
             time.sleep(2)
-            result = requests.request("GET", url, headers=self.access_token).json()
+            result = httpx.request("GET", url, headers=self.access_token).json()
             if result["status"] == "SUCCESS":
                 order_send_into_uploaded_to_bol(order_id, bol_order_item)
                 break
@@ -164,7 +164,7 @@ with engine.connect() as connection:
     for order in verzending_open_bol:
         order_dict = dict(order._mapping)
         if "dhl" in order_dict["t_t_dropshipment"]:
-            shipment_info = requests.get(
+            shipment_info = httpx.get(
                 f"https://api-gw.dhlparcel.nl/track-trace?key={order_dict['order_id_leverancier']}%2B{order_dict['shipmentdetails_zipcode']}"
             ).json()[0]
             shipment_on_depot = any(
@@ -181,11 +181,11 @@ with engine.connect() as connection:
                 order_dict["verzendpartner"] = "DHL"
                 bol_at_depot.append(order_dict)
         elif "postnl" in order_dict["t_t_dropshipment"]:
-            shipment_info = requests.get(
+            shipment_info = httpx.get(
                 f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['t_t_dropshipment'].split('/')[-1].strip()}?language=nl"
             )
             if shipment_info.status_code == 500:
-                shipment_info = requests.get(
+                shipment_info = httpx.get(
                     f"https://jouw.postnl.nl/track-and-trace/api/trackAndTrace/{order_dict['order_id_leverancier']}-{'NL' if 'NL' in order_dict['t_t_dropshipment'] else 'BE' }-{order_dict['shipmentdetails_zipcode']}?language=nl"
                 )
             observations = (
@@ -210,7 +210,10 @@ with engine.connect() as connection:
                 bol_at_depot.append(order_dict)
         elif "dpd" in order_dict["t_t_dropshipment"]:
             if "nl" in order_dict["t_t_dropshipment"] or "DE" in order_dict["t_t_dropshipment"]:
-                response = requests.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict["t_t_dropshipment"].split("/")[-1][:-1]}")
+                if len(order_dict["order_id_leverancier"]) == 14:
+                    response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict["t_t_dropshipment"].split("=")[-1]}")
+                else:
+                    response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict["t_t_dropshipment"].split("/")[-1][:-1]}")
                 if response.headers.get("Content-Type").startswith("application/json"):
                     shipment_info = response.json()
                     try:
@@ -224,7 +227,7 @@ with engine.connect() as connection:
                         order_dict["verzendpartner"] = "DPD-NL"
                         bol_at_depot.append(order_dict)
             # if "be" in order_dict["t_t_dropshipment"]:
-                # session = requests.Session()
+                # session = httpx.Session()
                 # headers = {
                 # '_csrf': 'fa2026e1-c9c6-41b5-aa5b-6657b7aee87c',
                 # 'searchShipmentSourcePage': 'INCOMING',
@@ -239,7 +242,7 @@ with engine.connect() as connection:
             else:
                 logger.info(f"niet bekend bij api dpd,{order_dict['t_t_dropshipment']}")
         elif "trans-mission" in order_dict["t_t_dropshipment"]:
-            page = requests.get(order_dict["t_t_dropshipment"])
+            page = httpx.get(order_dict["t_t_dropshipment"])
             page_body = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
             shipment_on_depot = next(
                 (
@@ -262,7 +265,7 @@ with engine.connect() as connection:
                 "X-Auth-Token": "dyna:6507f86f6f3a1",
                 "X-Requested-With": "XMLHttpRequest",
             }
-            response = requests.get(
+            response = httpx.get(
                 f"https://track.mydynalogic.eu/api/transportorder/full/ordernumber/{order_dict['order_id_leverancier']}/zipcode/{order_dict['shipmentdetails_zipcode']}",
                 headers=headers,
             )
@@ -274,7 +277,7 @@ with engine.connect() as connection:
                     order_dict["verzendpartner"] = "DYL"
                     bol_at_depot.append(order_dict)
         elif "gls" in order_dict["t_t_dropshipment"]:
-            response = requests.get(
+            response = httpx.get(
                 f"https://gls-group.eu/app/service/open/rest/GROUP/en/rstt029?match={order_dict['order_id_leverancier']}"
             )
             shipment_info = response.json()
