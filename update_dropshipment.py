@@ -4,15 +4,9 @@ import configparser
 import logging
 import datetime
 import io
-import httpx
 from lxml import etree
-
 from pathlib import Path
 import time
-
-from sqlalchemy import MetaData, Table, and_, create_engine, select, text, update
-from sqlalchemy.engine.url import URL
-
 
 def install(package):
     subprocess.call([sys.executable, "-m", "pip", "install", package])
@@ -22,6 +16,23 @@ sys.path.insert(0, str(Path.home()))
 
 
 config = configparser.ConfigParser()
+
+try:
+    import httpx
+except ModuleNotFoundError as e:
+    print(e, "trying to install")
+    install("httpx")
+    import httpx
+
+try:
+    from sqlalchemy import MetaData, Table, and_, create_engine, update
+    from sqlalchemy.engine.url import URL
+except ModuleNotFoundError as e:
+    print(e, "trying to install")
+    install("sqlalchemy")
+    from sqlalchemy import MetaData, Table, and_, create_engine, update
+    from sqlalchemy.engine.url import URL
+
 
 try:
     config.read_file(open(Path.home() / "Dropbox" / "MACRO" / "bol_export_files.ini"))
@@ -208,39 +219,6 @@ with engine.connect() as connection:
             if shipment_on_depot or status:
                 order_dict["verzendpartner"] = "TNT"
                 bol_at_depot.append(order_dict)
-        elif "dpd" in order_dict["t_t_dropshipment"]:
-            if "nl" in order_dict["t_t_dropshipment"] or "DE" in order_dict["t_t_dropshipment"]:
-                if len(order_dict["order_id_leverancier"]) == 14:
-                    response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict["t_t_dropshipment"].split("=")[-1]}")
-                else:
-                    response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict["t_t_dropshipment"].split("/")[-1][:-1]}")
-                if response.headers.get("Content-Type").startswith("application/json"):
-                    shipment_info = response.json()
-                    try:
-                        status_info = (
-                            shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
-                        )
-                        shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
-                    except AttributeError:
-                        shipment_on_depot = None
-                    if shipment_on_depot:
-                        order_dict["verzendpartner"] = "DPD-NL"
-                        bol_at_depot.append(order_dict)
-            # if "be" in order_dict["t_t_dropshipment"]:
-                # session = httpx.Session()
-                # headers = {
-                # '_csrf': 'fa2026e1-c9c6-41b5-aa5b-6657b7aee87c',
-                # 'searchShipmentSourcePage': 'INCOMING',
-                # 'value': order_dict['order_id_leverancier']
-                # }
-                # session.get("https://www.dpdgroup.com/be/mydpd/my-parcels/incoming")
-                # session.post("https://www.dpdgroup.com/be/mydpd/my-parcels/search", headers=headers)
-                # response = session.get(f"https://www.dpdgroup.com/be/mydpd/my-parcels/incoming?parcelNumber={order_dict['order_id_leverancier']}")
-                # page_body = etree.parse(io.BytesIO(response.content), etree.HTMLParser())
-                # print(page_body.xpath("//meta[@name='_csrf']/text"))
-                # pass
-            else:
-                logger.info(f"niet bekend bij api dpd,{order_dict['t_t_dropshipment']}")
         elif "trans-mission" in order_dict["t_t_dropshipment"]:
             page = httpx.get(order_dict["t_t_dropshipment"])
             page_body = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
@@ -286,6 +264,42 @@ with engine.connect() as connection:
                 bol_at_depot.append(order_dict)
             else:
                 logger.info(f"nog niet verwerkt door gls,{order_dict['t_t_dropshipment']}")
+        elif "dpd" in order_dict["t_t_dropshipment"]:
+            if "nl" in order_dict["t_t_dropshipment"] or "DE" in order_dict["t_t_dropshipment"]:
+                time.sleep(10) # prevent 429 errors, by slowing down
+                if len(order_dict["order_id_leverancier"]) == 14:
+                    response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('=')[-1]}")
+                else:
+                    response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('/')[-1][:-1]}")
+                if response.status_code == 429:
+                    break
+                if response.headers.get("Content-Type").startswith("application/json"):
+                    shipment_info = response.json()
+                    try:
+                        status_info = (
+                            shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
+                        )
+                        shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
+                    except AttributeError:
+                        shipment_on_depot = None
+                    if shipment_on_depot:
+                        order_dict["verzendpartner"] = "DPD-NL"
+                        bol_at_depot.append(order_dict)
+            # if "be" in order_dict["t_t_dropshipment"]:
+                # session = httpx.Session()
+                # headers = {
+                # '_csrf': 'fa2026e1-c9c6-41b5-aa5b-6657b7aee87c',
+                # 'searchShipmentSourcePage': 'INCOMING',
+                # 'value': order_dict['order_id_leverancier']
+                # }
+                # session.get("https://www.dpdgroup.com/be/mydpd/my-parcels/incoming")
+                # session.post("https://www.dpdgroup.com/be/mydpd/my-parcels/search", headers=headers)
+                # response = session.get(f"https://www.dpdgroup.com/be/mydpd/my-parcels/incoming?parcelNumber={order_dict['order_id_leverancier']}")
+                # page_body = etree.parse(io.BytesIO(response.content), etree.HTMLParser())
+                # print(page_body.xpath("//meta[@name='_csrf']/text"))
+                # pass
+            else:
+                logger.info(f"niet bekend bij api dpd,{order_dict['t_t_dropshipment']}")
 
 
 def custom_sort(item):
