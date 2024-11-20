@@ -1248,24 +1248,29 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
             xml_content = "\n".join(file_lines)
             parse_xml = et.fromstring(xml_content)
             if parse_xml.find(".//carrier_id").text == "DYNALOGIC":
+                logger.info(f"DYNALOGIC order ")  
                 order_id = parse_xml.find(".//trackingnumber").text.split("=")[-1]
             else:
                 order_id = parse_xml.find(".//OrderExternalId_01").text
-            tt_number = parse_xml.find(".//trackingnumber").text
-            track_en_trace_url = parse_xml.find(".//trackingurl").text
-            if "_" in order_id:
-                info_bol_db = f"SELECT orderid,order_orderitemid FROM orders_info_bol WHERE orderid = '{order_id}'"
-                with engine.connect() as connection:
-                    order_info = connection.exec_driver_sql(info_bol_db).first()
-                set_order_info_db_bol(order_info, track_en_trace_url, tt_number)
-                logger.info(f"{order_info} order bol tt exellent toegevoegd ")  
-            elif "-" in order_id:
-                info_blok_db = f"SELECT I.order_line_id FROM blokker_orders O LEFT JOIN blokker_order_items I ON O.commercialid = I.commercialid WHERE order_id = '{order_id}'"
-                with engine.connect() as connection:
-                    order_line_id = connection.exec_driver_sql(info_blok_db).first()
-                set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
-                logger.info(f"{order_info} order blokker tt exellent toegevoegd ") 
-            ftp.delete(file)
+                tt_number = parse_xml.find(".//trackingnumber").text
+                track_en_trace_url = parse_xml.find(".//trackingurl").text
+            if order_id: 
+                if "_" in order_id:
+                    info_bol_db = f"SELECT orderid,order_orderitemid FROM orders_info_bol WHERE orderid = '{order_id}'"
+                    with engine.connect() as connection:
+                        order_info = connection.exec_driver_sql(info_bol_db).first()
+                    set_order_info_db_bol(order_info, track_en_trace_url, tt_number)
+                    logger.info(f"{order_info} order bol tt exellent toegevoegd ")  
+                elif "-" in order_id:
+                    info_blok_db = f"SELECT I.order_line_id FROM blokker_orders O LEFT JOIN blokker_order_items I ON O.commercialid = I.commercialid WHERE order_id = '{order_id}'"
+                    with engine.connect() as connection:
+                        order_line_id = connection.exec_driver_sql(info_blok_db).first()
+                    set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
+                    logger.info(f"{order_info} order blokker tt exellent toegevoegd ")
+                ftp.delete(file)
+            else:
+                if parse_xml.find(".//customer_line_id").text == "Manually Inserted":
+                    ftp.delete(file)
 
     # nog iets verzinnen om de dynlogic orders te verwerken
 
@@ -1411,12 +1416,12 @@ if __name__ == "__main__":
     process_gls_messages(connection)
     process_dpd_messages(connection)
     process_postnl_ur_messages(connection)
-    process_beekman_messages(connection)
     process_ftp_files_tt_exl(
         config["excellent dropship tt"]["server"],
         config["excellent dropship tt"]["login"],
         config["excellent dropship tt"]["wachtwoord"],
     )
+    process_beekman_messages(connection)
 
     # # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
     process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher ")
