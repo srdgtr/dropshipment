@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 import sys
 import configparser
@@ -7,6 +8,7 @@ import io
 from lxml import etree
 from pathlib import Path
 import time
+
 
 def install(package):
     subprocess.call([sys.executable, "-m", "pip", "install", package])
@@ -23,6 +25,13 @@ except ModuleNotFoundError as e:
     print(e, "trying to install")
     install("httpx")
     import httpx
+
+try:
+    from asynciolimiter import StrictLimiter
+except ModuleNotFoundError as e:
+    print(e, "trying to install")
+    install("asynciolimiter")
+    from asynciolimiter import StrictLimiter
 
 try:
     from sqlalchemy import MetaData, Table, and_, create_engine, update
@@ -145,28 +154,30 @@ class BOL_API:
 niet_verwerkte_bol_dropship_orders = "SELECT I.orderid,I.order_orderitemid,O.shipmentdetails_zipcode,I.dropship,I.order_id_leverancier,I.t_t_dropshipment FROM orders_info_bol I LEFT JOIN orders_bol O ON I.orderid = O.orderid WHERE I.t_t_dropshipment > 1 < 4 AND I.order_droped_tt_to_bol IS NULL AND O.active_order = 1 ORDER BY O.updated_on DESC"
 
 
-def send_request_shiping_info_to_bol(self, verzender_drop, tt_num, bol_order_item, order_id):
-    url = "https://api.bol.com/retailer/shipments"
-    transport_info_dict_bol = {
-        "orderItems": [{"orderItemId": bol_order_item}],
-        "shipmentReference": None,
-        "transport": {"transporterCode": verzender_drop, "trackAndTrace": tt_num},
-    }
-    response = httpx.request("POST", url, headers=self.access_token, json=transport_info_dict_bol)
-    if response.status_code == 202:
-        url = f"https://api.bol.com/shared/process-status/{response.json()['processStatusId']}"
-        for _ in range(10):
-            time.sleep(2)
-            result = httpx.request("GET", url, headers=self.access_token).json()
-            if result["status"] == "SUCCESS":
-                order_send_into_uploaded_to_bol(order_id, bol_order_item)
-                break
-            elif result["status"] == "FAILURE":
-                logger.error(f"no succes message {result['errorMessage']} {url}")
-                break
-    else:
-        print(f"no succes message {response.text}")
-
+async def send_request_shiping_info_to_bol(self, verzender_drop, tt_num, bol_order_item, order_id, rate_limit):
+    await rate_limit.wait()
+    async with httpx.AsyncClient() as client:
+        url = "https://api.bol.com/retailer/shipments"
+        transport_info_dict_bol = {
+            "orderItems": [{"orderItemId": bol_order_item}],
+            "shipmentReference": None,
+            "transport": {"transporterCode": verzender_drop, "trackAndTrace": tt_num},
+        }
+        response = await client.post(url, headers=self.access_token, json=transport_info_dict_bol)
+        if response.status_code == 202:
+            url = f"https://api.bol.com/shared/process-status/{response.json()['processStatusId']}"
+            for _ in range(20):
+                response = await client.get(url, headers=self.access_token)
+                response_json = response.json()
+                if response_json['status'] == 'SUCCESS':
+                    order_send_into_uploaded_to_bol(order_id, bol_order_item)
+                    return
+                elif response_json['status'] == 'FAILURE':
+                    logger.error(f"no succes message {response_json['errorMessage']} {url}")
+                    return
+                await asyncio.sleep(15)
+        else:
+            print(f"no succes message {response.text}")
 
 bol_at_depot = []
 
@@ -265,39 +276,28 @@ with engine.connect() as connection:
             else:
                 logger.info(f"nog niet verwerkt door gls,{order_dict['t_t_dropshipment']}")
         elif "dpd" in order_dict["t_t_dropshipment"]:
-            if "nl" in order_dict["t_t_dropshipment"] or "DE" in order_dict["t_t_dropshipment"]:
-                time.sleep(10) # prevent 429 errors, by slowing down
-                if len(order_dict["order_id_leverancier"]) == 14:
-                    response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('=')[-1]}")
-                else:
-                    response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('/')[-1][:-1]}")
-                if response.status_code == 429:
-                    break
-                if response.headers.get("Content-Type").startswith("application/json"):
-                    shipment_info = response.json()
-                    try:
-                        status_info = (
-                            shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
-                        )
-                        shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
-                    except AttributeError:
+            time.sleep(10) # prevent 429 errors, by slowing down
+            if len(order_dict["order_id_leverancier"]) == 14:
+                response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('=')[-1]}")
+            else:
+                response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('/')[-1][:-1]}")
+            if response.status_code == 429:
+                break
+            if response.headers.get("Content-Type").startswith("application/json"):
+                shipment_info = response.json()
+                try:
+                    status_info = (
+                        shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
+                    )
+                    shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
+                except AttributeError:
+                    if datetime.datetime.now().time() >= datetime.time(10, 0):
+                        shipment_on_depot = True
+                    else:
                         shipment_on_depot = None
-                    if shipment_on_depot:
-                        order_dict["verzendpartner"] = "DPD-NL"
-                        bol_at_depot.append(order_dict)
-            # if "be" in order_dict["t_t_dropshipment"]:
-                # session = httpx.Session()
-                # headers = {
-                # '_csrf': 'fa2026e1-c9c6-41b5-aa5b-6657b7aee87c',
-                # 'searchShipmentSourcePage': 'INCOMING',
-                # 'value': order_dict['order_id_leverancier']
-                # }
-                # session.get("https://www.dpdgroup.com/be/mydpd/my-parcels/incoming")
-                # session.post("https://www.dpdgroup.com/be/mydpd/my-parcels/search", headers=headers)
-                # response = session.get(f"https://www.dpdgroup.com/be/mydpd/my-parcels/incoming?parcelNumber={order_dict['order_id_leverancier']}")
-                # page_body = etree.parse(io.BytesIO(response.content), etree.HTMLParser())
-                # print(page_body.xpath("//meta[@name='_csrf']/text"))
-                # pass
+                if shipment_on_depot:
+                    order_dict["verzendpartner"] = "DPD-NL"
+                    bol_at_depot.append(order_dict)
             else:
                 logger.info(f"niet bekend bij api dpd,{order_dict['t_t_dropshipment']}")
 
@@ -317,20 +317,26 @@ winkel = {
 config = configparser.ConfigParser()
 config.read(Path.home() / "bol_export_files.ini")
 
-
-def send_info_bol():
+async def send_info_bol():
+    tasks = []
+    rate_limit = StrictLimiter(25)
     for order in bol_at_depot:
         for shop, short_shop in winkel.items():
             if short_shop == order["orderid"].split("_")[-1]:
                 client_id, client_secret, _, _ = [x.strip() for x in config.get("bol_winkels_api", shop).split(",")]
         bol_auth = BOL_API(config["bol_api_urls"]["authorize_url"], client_id, client_secret)
-        send_request_shiping_info_to_bol(
+        # Create a task for each order to be sent asynchronously
+        task = asyncio.create_task(send_request_shiping_info_to_bol(
             bol_auth,
             order["verzendpartner"],
             order["order_id_leverancier"],
             order["order_orderitemid"],
             order["orderid"],
-        )
+            rate_limit,
+        ))
+        tasks.append(task)
 
+    # Wait for all tasks to complete in parallel
+    await asyncio.gather(*tasks)
 
-send_info_bol()
+asyncio.run(send_info_bol())
