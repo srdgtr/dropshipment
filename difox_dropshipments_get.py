@@ -12,11 +12,13 @@
 
 import configparser
 import datetime
-import mysql.connector
 import pandas as pd
 import logging
 import shutil
 from pathlib import Path
+from sqlalchemy import MetaData, create_engine
+from sqlalchemy.engine.url import URL
+from sqlalchemy.exc import SQLAlchemyError
 
 config = configparser.ConfigParser()
 
@@ -25,9 +27,8 @@ try:
 except FileNotFoundError as e:
     config.read(Path.home() / "bol_export_files.ini")
 
-connection_server = mysql.connector.connect(**config["database odin"])
-cursor = connection_server.cursor()
-
+url = URL.create(**config["database odin alchemy"])
+engine = create_engine(url)
 
 logger = logging.getLogger("process_difox")
 logging.basicConfig(filename="process_difox_" + datetime.date.today().strftime("%V") + ".log", level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")#nieuwe log elke week
@@ -36,12 +37,14 @@ invoices = [p for p in Path('/home/webshops/domains/toopbv.nl/public_html/ftpdif
 
 def check_local_drop(order_nr):
     get_current_drop_number = "SELECT dropship FROM orders_info_bol WHERE orderid = %s"
-    cursor.execute(get_current_drop_number, (order_nr,))
-    try:
-        number = cursor.fetchone()[0]
-        return int(number)
-    except:
-        return 0
+    with engine.begin() as conn:
+        try:
+            results = conn.exec_driver_sql(get_current_drop_number, (order_nr,)).all()
+            for result in results:
+                if result[0] is not None:
+                    return result[0]
+        except Exception:
+            return 0
 
 for data_file in invoices:
     invoice = pd.read_csv(data_file, delimiter=";", encoding='latin-1', header=None)
@@ -54,8 +57,9 @@ for data_file in invoices:
             drop_num = check_local_drop(orderid)
             if drop_num < 5:
                 mySql_insert_query = "UPDATE orders_info_bol SET dropship = 2, verkooporder_id_leverancier = %s WHERE orderid = %s "
-                cursor.execute(mySql_insert_query, (order_id_leverancier,orderid))
-                connection_server.commit()
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(mySql_insert_query, (order_id_leverancier,orderid))
+                    conn.commit()
                 file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "log"
                 logger.info(f"processed stap 2 {file_name}")
             else:
@@ -66,8 +70,9 @@ for data_file in invoices:
             drop_num = check_local_drop(orderid)
             if drop_num < 5:
                 mySql_insert_query = "UPDATE blokker_order_items SET dropship = 2, verkooporder_id_leverancier = %s WHERE orderid = %s "
-                cursor.execute(mySql_insert_query, (order_id_leverancier,orderid))
-                connection_server.commit()
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(mySql_insert_query, (order_id_leverancier,orderid))
+                    conn.commit()
                 file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "log"
                 logger.info(f"processed stap 2 {file_name}")
             else:
@@ -78,8 +83,9 @@ for data_file in invoices:
             drop_num = check_local_drop(orderid)
             if drop_num < 5:
                 mySql_insert_query = "UPDATE conrad_order_items SET dropship = 2, verkooporder_id_leverancier = %s WHERE orderid = %s "
-                cursor.execute(mySql_insert_query, (order_id_leverancier,orderid))
-                connection_server.commit()
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(mySql_insert_query, (order_id_leverancier,orderid))
+                    conn.commit()
                 file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "log"
                 logger.info(f"processed stap 2 {file_name}")
             else:
@@ -90,7 +96,7 @@ for data_file in invoices:
     except AttributeError as error:
         file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "err"
         logger.info(f"Failed to convert becourse number missing {error,file_name}") #normal, only dropshipments have number
-    except mysql.connector.Error as error:
+    except SQLAlchemyError as error:
         logger.error(f"Failed to update {error}")
         file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "err"
     shutil.move(path / file_name, new_path / file_name) 
@@ -109,13 +115,14 @@ for data_file in backorder:
                 drop_num = check_local_drop(orderid)
                 if drop_num < 5:
                     mySql_insert_query = "UPDATE orders_info_bol SET dropship = 3, t_t_dropshipment = %s,order_id_leverancier = %s WHERE orderid = %s "
-                    cursor.execute(mySql_insert_query, (t_t_dropshipment,order_id_leverancier,orderid))
-                    connection_server.commit()
+                    with engine.begin() as conn:
+                        conn.exec_driver_sql(mySql_insert_query, (t_t_dropshipment,order_id_leverancier,orderid))
+                        conn.commit()
                     file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "log"
                     logger.info(f"processed stap 3 {file_name}")
                 else:
                     logger.info(f"local dropship {orderid} step 3 done")
-            except mysql.connector.Error as error:
+            except SQLAlchemyError as error:
                 logger.error(f"Failed to update {error}")
                 file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "err"
             shutil.move(path / file_name, new_path / file_name)
@@ -136,14 +143,15 @@ for data_file in verzendingen:
                 order_id_leverancier = invoice.iloc[0][0]
                 t_t_dropshipment = invoice.iloc[0][53]
                 if len(t_t_dropshipment) != 15:
-                    t_t_dropshipment = "ongeldig"
+                    t_t_dropshipment_url = "ongeldig"
                 else:
-                    t_t_dropshipment = f"https://extranet.dpd.de/status/nl_NL/parcel/{t_t_dropshipment}"
+                    t_t_dropshipment_url = f"https://extranet.dpd.de/status/nl_NL/parcel/{t_t_dropshipment}"
                 drop_num = check_local_drop(orderid)
                 if drop_num < 5:
-                    mySql_insert_query = "UPDATE orders_info_bol SET dropship = 4, t_t_dropshipment = %s,order_id_leverancier = %s WHERE orderid = %s "
-                    cursor.execute(mySql_insert_query, (t_t_dropshipment,order_id_leverancier,orderid))
-                    connection_server.commit()
+                    insert_query = "UPDATE orders_info_bol SET dropship = 4, t_t_dropshipment = %s,order_id_leverancier = %s,verkooporder_id_leverancier = %s WHERE orderid = %s "
+                    with engine.begin() as conn:
+                        conn.exec_driver_sql(insert_query, (t_t_dropshipment_url,t_t_dropshipment,order_id_leverancier,orderid))
+                        conn.commit()
                     file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "log"
                     logger.info(f"processed stap 4 {file_name}")
                 else:
@@ -151,7 +159,7 @@ for data_file in verzendingen:
             except AttributeError as error:
                 file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "err"
                 logger.info(f"Failed to convert becourse number missing {error,file_name}") #normal, only dropshipments have number
-            except mysql.connector.Error as error:
+            except SQLAlchemyError as error:
                 logger.error(f"Failed to update {error}")
                 file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "err"
             shutil.move(path / file_name, new_path / file_name)
@@ -163,6 +171,3 @@ for data_file in verzendingen:
         file_name,path,new_path =  data_file.name,data_file.parent.resolve(),data_file.parent.resolve()/ "err"
         logger.error(f"Geen dropshipment {file_name}")
         shutil.move(path / file_name, new_path / file_name)
-
-cursor.close()
-connection_server.close()
