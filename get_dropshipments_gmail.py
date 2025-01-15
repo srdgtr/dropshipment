@@ -131,12 +131,18 @@ def set_order_info_db_bol(order_info, track_en_trace_url, track_en_trace_num):
     orders_info_bol = Table("orders_info_bol", metadata, autoload_with=engine)
     logger.info(f"start stap 3 bol {order_info}")
     if order_info:
+        try:
+            order_id = order_info['orderid']
+            order_orderitemid = order_info['order_orderitemid']
+        except TypeError:
+            order_id = order_info[0]
+            order_orderitemid = order_info[1]
         drop_send = (
             update(orders_info_bol)
             .where(
                 and_(
-                    orders_info_bol.columns.orderid == order_info[0],
-                    orders_info_bol.columns.order_orderitemid == order_info[1],
+                    orders_info_bol.columns.orderid == order_id,
+                    orders_info_bol.columns.order_orderitemid == order_orderitemid,
                 )
             )
             .values(dropship="3", t_t_dropshipment=track_en_trace_url, order_id_leverancier=track_en_trace_num)
@@ -1104,108 +1110,78 @@ def process_postnl_ur_messages(conn):
 
 
 def process_beekman_messages(conn):
-    try:
-        from requests_html import HTMLSession
-    except ModuleNotFoundError as e:
-        print(e, "trying to install")
-        install("requests_html")
-        from requests_html import HTMLSession
+    query = """
+        SELECT 
+            I.orderid,
+            order_orderitemid,
+            offer_sku,
+            verkooporder_id_leverancier,
+            shipmentdetails_zipcode,
+            shipmentdetails_countrycode 
+        FROM 
+            orders_bol O 
+        LEFT JOIN 
+            orders_info_bol I 
+        ON 
+            O.orderid = I.orderid 
+        WHERE 
+            offer_sku LIKE 'APD%' 
+            AND dropship = 1
+            AND active_order = 1
+            AND order_id_leverancier IS NULL 
+            AND verkooporder_id_leverancier IS NOT NULL
+    """
+    with engine.connect() as connection:
+        open_orders = connection.execute(text(query)).mappings().all()
+    session = httpx.Client()
+    headers = {
+        'Accept': 'application/json',
+        'Authorization': f'Bearer {config.get("beekman", "api_key")}'
+    }
+    for order_info in open_orders:
+        order_status = session.get(f"https://rest.beekman.nl/dropshipment?id={order_info['verkooporder_id_leverancier']}", headers=headers)
+        if order_status.status_code == 200:
+            if order_status.json().get("error"):
+                logger.error(f"{order_info["orderid"]} {order_status.json()['error_message']}")
+            else:
+                shipments = order_status.json().get("shipments", [])
+                for shipment in shipments:
+                    trackcode = shipment.get('trackcode')
+                    trackurl = shipment.get('trackurl')
+                    for item in shipment.get('items'):
+                        if "".join(filter(str.isdigit, order_info.get("offer_sku"))) == item.get('code'):
+                            set_order_info_db_bol(order_info, trackurl, trackcode)
+                else:
+                       logger.info(f"{order_info.get("orderid")} Nog geen T&T nummer bekend ")  
+
     message_treads_ids = get_messages(conn, 'from:(*@beekman.nl) "Verzend bevestiging"')
     for message_treads_id in message_treads_ids:
-        message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
-        mail_body = get_body_email(message)
-        mail_info = {
-            "dienst": "beekman",
-            "beekman_url": mail_body.xpath("//a[normalize-space()='www.beekman.nl']/@href")[0],
-        }
-        if mail_body.xpath("//strong[contains(text(),'Audio Video Van Gils B.V.')]"):
-            mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
-            continue
-        session = HTMLSession()
-        page = session.get("https://www.beekman.nl/inloggen")
-        inlog_tokens = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
-        token = inlog_tokens.xpath("//input[@name='_token']/@value")[0]
-        hfh = inlog_tokens.xpath("//input[@name='hfh[]']/@value")[0]
-        data = {
-            "_token": token,
-            "hfh[]": hfh,
-            "username": config["beekman"].get("username"),
-            "password": config["beekman"].get("password"),
-        }
-        session.post("https://www.beekman.nl/inloggen", data=data)
-        js_page = session.get(mail_info["beekman_url"])
-        # print(js_page.content)
-        tt_page = etree.parse(io.BytesIO(js_page.content), etree.HTMLParser())
-        try:
-            postorg = tt_page.xpath("//td[@class='text-left']//text()")[0]
-            mail_info["tt_url"] = tt_page.xpath("//a[normalize-space()='Klik hier om uw zending te volgen']/@href")[0]
-        except IndexError:
-            logger.error(f"stap 1 beekman {mail_info['beekman_url']} failed, package trackentrace not found on beekman")
-            continue
-        if postorg == "PostNL":
-            mail_info["tt_num"] = mail_info["tt_url"].split("/")[-1].split("-")[0]
-            try:
-                postnl_api_info = (
-                    httpx.get(
-                        f"{mail_info['tt_url'].replace('track-and-trace','track-and-trace/api/trackAndTrace')}?language=nl"
-                    )
-                    .json()["colli"]
-                    .get(mail_info["tt_num"])
-                )
-                if postnl_api_info["recipient"]["names"].get("personName"):
-                    mail_info["first_name"], *mail_info["last_name"] = (
-                        postnl_api_info["recipient"]["names"].get("personName").split()
-                    )
-                elif postnl_api_info["recipient"]["names"].get("companyName"):
-                    mail_info["first_name"], *mail_info["last_name"] = (
-                        postnl_api_info["recipient"]["names"].get("companyName").split()
-                    )
-                mail_info["last_name"] = " ".join(mail_info["last_name"])
-                mail_info["street"] = postnl_api_info["recipient"]["address"]["street"]
-                mail_info["house_number"] = postnl_api_info["recipient"]["address"]["houseNumber"]
-                mail_info["postcode"] = postnl_api_info["recipient"]["address"]["postalCode"]
-                mail_info["city"] = postnl_api_info["recipient"]["address"]["town"]
-            except TypeError as e:
-                logger.error(f"stap 3 beekman {mail_info} failed, package not found on postnl {e}")
-                continue
-        elif postorg == "DHL Parcel":
-            postal_code = tt_page.xpath("//address//text()[3]")[0].strip().split(" ", 1)[0]
-            mail_info["tt_num"] = re.split(r"[=&]", mail_info["tt_url"])[1]
-            response = httpx.get(
-                f"https://api-gw.dhlparcel.nl/track-trace?key={mail_info['tt_num']}%2B{postal_code}"
-            )
-            if response.status_code == 200:
-                dhl_api_info = response.json()[0]
-            if response.status_code == 404:
-                logger.error(f"stap 3 beekman {mail_info['tt_num']} failed, package not found on dhl")
-                continue
-            mail_info["first_name"], *mail_info["last_name"] = dhl_api_info["receiver"]["name"].split()
-            if mail_info["first_name"].lower() in (
-                "ten",
-                "de",
-                "het",
-                "van",
-                "van den",
-                "van der",
-                "van het",
-            ):  # sommige doen het net omgedraaid, daarom checken, of tussenvoegsel waarschijndelijk is
-                *mail_info["last_name"], mail_info["first_name"] = dhl_api_info["receiver"]["name"].split()
-            mail_info["last_name"] = " ".join(mail_info["last_name"])
-            mail_info["street"] = dhl_api_info["receiver"]["address"]["street"]
-            mail_info["house_number"] = dhl_api_info["receiver"]["address"]["houseNumber"]
-            mail_info["postcode"] = dhl_api_info["receiver"]["address"]["postalCode"]
-            mail_info["city"] = dhl_api_info["receiver"]["address"]["city"]
-        get_order_info_db = get_set_info_database(mail_info)
-        if get_order_info_db:
-            mark_read(conn, message_treads_id)
+        mark_read(conn, message_treads_id)
         add_label_processed_verzending(conn, message_treads_id)
 
 def process_visynet_api():
     # get still open orders and check if they have a track and trace
-    query = "SELECT I.orderid,order_orderitemid,verkooporder_id_leverancier,shipmentdetails_zipcode,shipmentdetails_countrycode FROM orders_bol O LEFT JOIN orders_info_bol I ON O.orderid = I.orderid WHERE offer_sku LIKE 'VIS%' AND dropship = 1 AND verkooporder_id_leverancier IS NOT NULL"
+    query = """
+        SELECT 
+            I.orderid,
+            order_orderitemid,
+            verkooporder_id_leverancier,
+            shipmentdetails_zipcode,
+            shipmentdetails_countrycode 
+        FROM 
+            orders_bol O 
+        LEFT JOIN 
+            orders_info_bol I 
+        ON 
+            O.orderid = I.orderid 
+        WHERE 
+            offer_sku LIKE 'VIS%' 
+            AND dropship = 1 
+            AND active_order = 1 
+            AND verkooporder_id_leverancier IS NOT NULL
+    """
     with engine.connect() as connection:
-        open_orders = connection.execute(text(query)).fetchall()
+        open_orders = connection.execute(text(query)).mappings().all()
     session = httpx.Client(verify=False)
     access_token = session.post(
         config.get("visynet api", "basis_url") + "/auth/requesttoken",
@@ -1218,20 +1194,20 @@ def process_visynet_api():
     ).json()["token"]
     session.headers.update({"Authorization": f"Bearer {access_token}"})
     for order_info in open_orders:
-        order_status = session.post("https://api.visynet.be/order/status", json={"orderid" : order_info[2] }, verify=False)
+        order_status = session.post("https://api.visynet.be/order/status", json={"orderid" : order_info['verkooporder_id_leverancier'] })
         if order_status.status_code == 200:
-            if order_status.json()["error_message"]:
-                logger.error(f"{order_info[0]} {order_status.json()['error_message']}")
+            if order_status.json().get("error_message"):
+                logger.error(f"{order_info["orderid"]} {order_status.json()['error_message']}")
             else:
                 if order_status.json()['result']['Carrier']:
-                    if "PostNL" in order_status.json()['result']['Carrier']:
-                        set_order_info_db_bol(order_info, f"https://jouw.postnl.nl/#!/track-en-trace/{order_status.json()['result']['trackingnumber']}/{order_info[4]}/{order_info[3]} ", order_status.json()['result']['trackingnumber'])
+                    if "PostNL" in order_status.json()['result']['Carrier']: 
+                        set_order_info_db_bol(order_info, f"https://jouw.postnl.nl/#!/track-en-trace/{order_status.json()['result']['trackingnumber']}/{order_info["shipmentdetails_countrycode"]}/{order_info["shipmentdetails_zipcode"]} ", order_status.json()['result']['trackingnumber'])
                     elif "GLS" in order_status.json()['result']['Carrier']: 
                         set_order_info_db_bol(order_info, f"https://gls-group.eu/EU/en/parcel-tracking?match={order_status.json()['result']['trackingnumber']}", order_status.json()['result']['trackingnumber'])
                     elif "UPS" in order_status.json()['result']['Carrier']:
                         set_order_info_db_bol(order_info, f"https://www.ups.com/track?loc=nl_NL&{order_status.json()['result']['trackingnumber']}", order_status.json()['result']['trackingnumber'])
                 else:
-                       logger.info(f"{order_info[0]} Nog geen T&T nummer bekend ")     
+                       logger.info(f"{order_info.get("orderid")} Nog geen T&T nummer bekend ")     
 
 
 def process_ftp_files_tt_exl(server, login, wachtwoord):
@@ -1409,6 +1385,7 @@ def process_if_replays_juiste_product(conn):
 if __name__ == "__main__":
     credentials = get_autorisation_gooogle_api()
     connection = gmail_create_connection(credentials)
+    process_beekman_messages(connection)
     process_bpost_messages(connection)
     process_dhl_messages(connection)
     process_dynalogic_messages(connection)
@@ -1421,7 +1398,6 @@ if __name__ == "__main__":
         config["excellent dropship tt"]["login"],
         config["excellent dropship tt"]["wachtwoord"],
     )
-    process_beekman_messages(connection)
 
     # # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
     process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher ")
