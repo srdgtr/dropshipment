@@ -83,20 +83,6 @@ def order_send_into_uploaded_to_bol(orderid, orderitemid):
     with engine.begin() as conn:
         conn.execute(drop_send)
 
-
-# blokker nog een keer regelen
-# def set_order_info_db_blokker(order_info, track_en_trace_url, track_en_trace_num):
-#     orders_info_blokker = Table("blokker_order_items", metadata, autoload_with=engine)
-#     logger.info(f"start stap 3 blokker {order_info}")
-#     drop_send = (
-#         update(orders_info_blokker)
-#         .where(orders_info_blokker.columns.order_line_id == order_info[0])
-#         .values(dropship="3", t_t_dropshipment=track_en_trace_url, order_id_leverancier=track_en_trace_num)
-#     )
-#     with engine.begin() as conn:
-#         conn.execute(drop_send)
-
-
 class BOL_API:
     host = None
     key = None
@@ -185,7 +171,25 @@ with engine.connect() as connection:
     verzending_open_bol = connection.exec_driver_sql(niet_verwerkte_bol_dropship_orders)
     for order in verzending_open_bol:
         order_dict = dict(order._mapping)
-        if "dhl" in order_dict["t_t_dropshipment"]:
+        if "dhl.com" in order_dict["t_t_dropshipment"]:
+            if datetime.datetime.now().minute < 5: # limit of 250 in api calls, so only check 1 time an hour
+                headers = {
+                    'accept': 'application/json',
+                    'DHL-API-Key': config['dhl_api']['key']
+                }
+                shipment_info = httpx.get(
+                    f"https://api-eu.dhl.com/track/shipments?trackingNumber={order_dict['order_id_leverancier']}&language=en&requesterCountryCode=NL&source=tt", headers=headers
+                ).json()
+                shipments = shipment_info.get('shipments', [])
+                shipment_on_depot = any(
+                    event.get('statusDetailed') == 'MVARR_NRQRD_PO'
+                    for shipment in shipments
+                    for event in shipment.get('events', [])
+                )
+                if shipment_on_depot:
+                    order_dict["verzendpartner"] = "DHL_DE"
+                    bol_at_depot.append(order_dict)
+        if "dhlparcel" in order_dict["t_t_dropshipment"]:
             shipment_info = httpx.get(
                 f"https://api-gw.dhlparcel.nl/track-trace?key={order_dict['order_id_leverancier']}%2B{order_dict['shipmentdetails_zipcode']}"
             ).json()[0]
@@ -237,9 +241,9 @@ with engine.connect() as connection:
                 (
                     text
                     for text in page_body.xpath(
-                        "//td[contains(text(),'In bestelling')]/text()|//td[contains(text(),'Aflever Scan')]/text()"
+                        "//h6[normalize-space()='Aflevering']/../h4/text()"
                     )
-                    if any(keyword in text for keyword in ["In bestelling", "Aflever Scan"])
+                    if any(keyword in text for keyword in ["Verwacht tussen", "Afgeleverd op"])
                 ),
                 None,
             )

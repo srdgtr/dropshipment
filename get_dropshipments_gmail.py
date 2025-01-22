@@ -789,7 +789,7 @@ def process_transmision_messages(conn):
             mail_info = {
                 "dienst": "transmision",
                 "tt_url": mail_body.xpath("//a[contains(text(),'Link naar zendingstatus')]/@href")[0],
-                "order_num": mail_body.xpath("//b[contains(text(),'AFLEVERADRES:')]/../../..//tr[3]/td[1]/text()")[0],
+                "order_num": mail_body.xpath("//b[contains(text(),'AFLEVERADRES:')]/../../..//tr[3]/td[1]/text()")[0].strip(),
             }
             if "_" not in mail_info["order_num"] and "-" not in mail_info["order_num"] and not drop:
                 logger.info(f"stap 3 transmission no order_nr bol/blokker, message id {message_treads_id}")
@@ -807,8 +807,8 @@ def process_transmision_messages(conn):
             page = httpx.get(mail_info["tt_url"])
             page_body = etree.parse(io.BytesIO(page.content), etree.HTMLParser())
             mail_info["tt_num"] = page_body.xpath(
-                "//label[@title='Uniek zendingnummer bij TransMission']/../span[1]/text()"
-            )[0]
+                "//p[normalize-space()='Zendingnummer']/../h4/text()"
+            )[0].replace(" ", "")
         except Exception:
             logger.error(f"getting t&t transmission failed, message id {message_treads_id}")
             continue
@@ -818,7 +818,7 @@ def process_transmision_messages(conn):
             mail_info["first_name"], *mail_info["last_name"] = [
                 x.strip()
                 for x in re.split(
-                    r"[ .]", mail_body.xpath("//b[contains(text(),'AFLEVERADRES:')]/../text()")[1].lower(), 1
+                    r"[ .]", mail_body.xpath("//b[contains(text(),'AFLEVERADRES:')]/../text()")[1].lower(), maxsplit=1
                 )
             ]
             mail_info["last_name"] = " ".join(mail_info["last_name"])
@@ -830,7 +830,7 @@ def process_transmision_messages(conn):
             ]
             mail_info["postcode"], mail_info["city"] = [
                 x.strip()
-                for x in re.split(" ", mail_body.xpath("//b[contains(text(),'AFLEVERADRES:')]/../text()")[3].lower(), 1)
+                for x in re.split(" ", mail_body.xpath("//b[contains(text(),'AFLEVERADRES:')]/../text()")[3].lower(), maxsplit=1)
             ]
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
@@ -1142,7 +1142,7 @@ def process_beekman_messages(conn):
         order_status = session.get(f"https://rest.beekman.nl/dropshipment?id={order_info['verkooporder_id_leverancier']}", headers=headers)
         if order_status.status_code == 200:
             if order_status.json().get("error"):
-                logger.error(f"{order_info["orderid"]} {order_status.json()['error_message']}")
+                logger.error(f"{order_info['orderid']} {order_status.json()['error_message']}")
             else:
                 shipments = order_status.json().get("shipments", [])
                 for shipment in shipments:
@@ -1152,7 +1152,7 @@ def process_beekman_messages(conn):
                         if "".join(filter(str.isdigit, order_info.get("offer_sku"))) == item.get('code'):
                             set_order_info_db_bol(order_info, trackurl, trackcode)
                 else:
-                       logger.info(f"{order_info.get("orderid")} Nog geen T&T nummer bekend ")  
+                       logger.info(f"{order_info.get('orderid')} Nog geen T&T nummer bekend ")  
 
     message_treads_ids = get_messages(conn, 'from:(*@beekman.nl) "Verzend bevestiging"')
     for message_treads_id in message_treads_ids:
@@ -1197,17 +1197,17 @@ def process_visynet_api():
         order_status = session.post("https://api.visynet.be/order/status", json={"orderid" : order_info['verkooporder_id_leverancier'] })
         if order_status.status_code == 200:
             if order_status.json().get("error_message"):
-                logger.error(f"{order_info["orderid"]} {order_status.json()['error_message']}")
+                logger.error(f"{order_info['orderid']} {order_status.json()['error_message']}")
             else:
                 if order_status.json()['result']['Carrier']:
                     if "PostNL" in order_status.json()['result']['Carrier']: 
-                        set_order_info_db_bol(order_info, f"https://jouw.postnl.nl/#!/track-en-trace/{order_status.json()['result']['trackingnumber']}/{order_info["shipmentdetails_countrycode"]}/{order_info["shipmentdetails_zipcode"]} ", order_status.json()['result']['trackingnumber'])
+                        set_order_info_db_bol(order_info, f"https://jouw.postnl.nl/#!/track-en-trace/{order_status.json()['result']['trackingnumber']}/{order_info['shipmentdetails_countrycode']}/{order_info['shipmentdetails_zipcode']} ", order_status.json()['result']['trackingnumber'])
                     elif "GLS" in order_status.json()['result']['Carrier']: 
                         set_order_info_db_bol(order_info, f"https://gls-group.eu/EU/en/parcel-tracking?match={order_status.json()['result']['trackingnumber']}", order_status.json()['result']['trackingnumber'])
                     elif "UPS" in order_status.json()['result']['Carrier']:
                         set_order_info_db_bol(order_info, f"https://www.ups.com/track?loc=nl_NL&{order_status.json()['result']['trackingnumber']}", order_status.json()['result']['trackingnumber'])
                 else:
-                       logger.info(f"{order_info.get("orderid")} Nog geen T&T nummer bekend ")     
+                       logger.info(f"{order_info.get('orderid')} Nog geen T&T nummer bekend ")     
 
 
 def process_ftp_files_tt_exl(server, login, wachtwoord):
@@ -1372,7 +1372,7 @@ def process_bol_orders(conn, product_type, zoek_string):
 def process_if_replays_juiste_product(conn):
     message_treads_ids = get_messages(
         conn,
-        f'to:*@vangilsweb.nl OR to:*@toopbv.nl OR to:toopbv@gmail.com subject:"Re: Juiste"',
+        f'to:*@vangilsweb.nl OR to:*@toopbv.nl OR to:toopbv@gmail.com subject:"Juiste"',
         gewenste_aantal_dagen="5d",
     )
     for message_treads_id in message_treads_ids:
