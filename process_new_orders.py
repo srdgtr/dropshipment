@@ -1548,7 +1548,7 @@ def automatische_facturen_bol():
     
     winkels = {"ADE": "vangils", "TB": "toop", "TS": "toop", "TE": "toop"}
     odin_url = "https://toop.nl:25583/odin_website/pdf_factuur_maken"
-    # odin_url = "http://127.0.0.1:7002/odin_website/pdf_factuur_maken"
+    # odin_url = "http://127.0.0.1:7002/odin_website/pdf_factuur_maken" # for testing
     credentials_map = {}
     for shop, credentials in config["bol_winkels_api"].items():
         try:
@@ -1573,8 +1573,6 @@ def automatische_facturen_bol():
         if order_shop != current_shop:
             if current_session:
                 current_session.close()
-                # current_shop = None # current_shop is set below or loop continues
-                # current_session = None # current_session is set below or loop continues
 
             if order_shop not in credentials_map:
                 logger.error(f"No credentials found for {order_shop} when trying to re-authenticate.")
@@ -1620,7 +1618,7 @@ def automatische_facturen_bol():
                 with httpx.Client(verify=False) as client:
                     verkrijgen_factuur = client.get(f"{odin_url}/{factuur['orderid']}/{factuur['order_ean']}/bol/{winkels.get(factuur["orderid"].split("_")[1]) if "_" in factuur["orderid"] else None}")
                     verkrijgen_factuur.raise_for_status()
-                    
+
                 files = {
                         "invoice": (
                             f"invoice_{factuur['orderid']}.pdf",
@@ -1631,8 +1629,7 @@ def automatische_facturen_bol():
 
                 current_time = int(time.time())
                 current_minute_window = current_time // 60
-
-                
+               
                 if current_minute_window != invoice_upload_rate_limiter.window:
                     invoice_upload_rate_limiter.window = current_minute_window
                     invoice_upload_rate_limiter.count = 0
