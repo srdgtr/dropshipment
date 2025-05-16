@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import mimetypes
+import os
 import pickle
 import re
 import subprocess
@@ -13,10 +14,11 @@ from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
 from ftplib import FTP
+import time
 import httpx
 import lxml.etree as et
 from MySQLdb import OperationalError # pip install mysqlclient op windows
-
+from dataclasses import dataclass
 
 def install(package):
     subprocess.call([sys.executable, "-m", "pip", "install", package])
@@ -60,6 +62,8 @@ except ModuleNotFoundError as e:
 
 from sqlalchemy import MetaData, Table, and_, create_engine, select, text, update
 from sqlalchemy.engine.url import URL
+from sqlalchemy.exc import SQLAlchemyError
+
 
 sys.path.insert(0, str(Path.cwd().parent))
 from bol_export_file import get_file
@@ -852,6 +856,10 @@ def process_gls_messages(conn):
         }
         try:
             mail_info["tt_num"] = mail_info["tt_url"].split("=")[1].split("&")[0]
+            if not mail_body.xpath("//td/table[contains(@bgcolor,'#F3F3F3')]//tr[7]/td//text()"):
+                logger.info(f"gls bestelling voor ons zelf {mail_info}")
+                add_label_processed_verzending(conn, message_treads_id)
+                continue
             _, mail_info["last_name"], mail_info["first_name"] = [
                 x.strip(",")
                 for x in re.split(
@@ -1194,7 +1202,7 @@ def process_visynet_api():
     ).json()["token"]
     session.headers.update({"Authorization": f"Bearer {access_token}"})
     for order_info in open_orders:
-        order_status = session.post("https://api.visynet.be/order/status", json={"orderid" : order_info['verkooporder_id_leverancier'] })
+        order_status = session.post(f"{config.get('visynet api', 'basis_url')}/order/status", json={"orderid" : order_info['verkooporder_id_leverancier'] })
         if order_status.status_code == 200:
             if order_status.json().get("error_message"):
                 logger.error(f"{order_info['orderid']} {order_status.json()['error_message']}")
@@ -1259,15 +1267,14 @@ def gmail_send_mail(
     Returns: Draft object, including draft id and message meta data."""
     try:
         # html text for mail
-        standaard_begin_text = "Beste klant,<br><br>Bedankt voor uw bestelling!<br><br>"
+        standaard_begin_text = "Beste klant,<br><br>Bedankt voor uw bestelling!<br><br>We willen er zeker van zijn dat het onderdeel dat u heeft besteld perfect in uw apparaat past. Veel modellen lijken op elkaar, maar kleine verschillen kunnen ervoor zorgen dat het onderdeel niet past. Daarom helpen we u graag om dit vooraf te controleren.<br><br>"
         standaard_eind_text = "<br><br><br>Met vriendelijke groet,<br><br>Louise<br>"
-        bijlage_text = "<br><br>In de bijlage sturen wij een afbeelding mee van de meest voorkomende plaatsen waar u het typenummer kunt vinden op uw apparaat.<br><br>"
         appraat_begin = f"U heeft bij ons een {waarvoor} besteld voor uw "
         appraat_eind = f". Nu blijkt uit ervaring dat er vaak wat onduidelijkheid heerst over het type {waarvoor} dat er nodig is.<br>"
         typeplaatje_begin = "Mocht u twijfelen of u het juiste exemplaar heeft besteld, willen wij u vragen om een foto te maken van het typeplaatje dat op uw apparaat staat. In sommige gevallen zit er geen typeplaatje op het apparaat maar staat het typenummer in het apparaat zelf gedrukt. Het typeplaatje vindt u meestal aan de "
         typeplaatje_midden = " van uw apparaat"
         typeplaatje_midden_2 = "en bestaat uit een combinatie van letters en cijfers. Let op! Ook de cijfers na het /-teken zijn belangrijk. Een foto van uw "
-        typeplaatje_eind = f" of {waarvoor} is niet voldoende om het typenummer te achterhalen. <br> <br>"
+        typeplaatje_eind = f" of {waarvoor} is niet voldoende om het typenummer te bepalen. <br> <br> Mocht u het typeplaatje niet kunnen vinden laat het ons dan weten, wij helpen u alsnog graag verder.<br> <br> In de bijlage sturen wij een afbeelding mee van de meest voorkomende plaatsen waar u het typenummer kunt vinden op uw apparaat.<br><br> "
 
         type_info = {
             "waterreservoir": {
@@ -1275,7 +1282,7 @@ def gmail_send_mail(
             "afbeelding": "padhouder",
             },
             "padhouder": {
-            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}onderkant{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind} {bijlage_text}",
+            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}onderkant{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind}",
             "afbeelding": "padhouder",
             },
             "draaiplateau": {
@@ -1296,21 +1303,26 @@ def gmail_send_mail(
             },
         }
         info = type_info.get(waarvoor)
-        info["type_device"]
+        # info["type_device"]
         message = EmailMessage()
         message["To"] = bol_email
 
         image_cid = make_msgid(domain=f"{kvk_winkel}.nl")
         image_cid2 = make_msgid(domain=f"{kvk_winkel}.nl")
         if kvk_winkel == "toopbv":
-            message["From"] = "toopbv@gmail.com"
+            message["From"] = "info@toopbv.nl"
             sign_picture = "toop.png"
             naam_shop = "toop"
         elif kvk_winkel == "vangilsweb":
             message["From"] = "info@vangilsweb.nl"
             sign_picture = "vangils.jpg"
             naam_shop = "vangils web" 
-        message.add_alternative(f"<html><body>{standaard_begin_text}{info['type_device']} Voor 'same day delivery' orders hebben wij deze informatie voor 9.00 uur in de ochtend nodig om uw bestelling nog aan de kunnen passen. Voor 'next day delivery' orders hebben wij deze informatie voor 15.00 uur nodig.{standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='https://toop.nl/uitleg.html'> <br> <br> <img src='cid:{image_cid2[1:-1]}' alt={naam_shop}></body></html>",subtype="html",)
+        message.add_alternative(f"""<html><body>{standaard_begin_text}{info['type_device']} Vanwege onze vlugge orderverwerking is het belangrijk dat u tijdig reageert op dit mailbericht! <br>\
+                                    Heeft u besteld voor 00:00 uur, dan hebben wij vandaag voor 9:00 uur de juiste bestelgegevens nodig om de 24 uur service te kunnen leveren.<br>\
+                                    Heeft u besteld voor 15:00 uur, dan hebben wij vandaag voor 15:30 uur de juiste bestelgegevens nodig om de 24 uur service te kunnen leveren.<br><br>\
+                                    Om gebruik te kunnen blijven maken van onze 1-3 werkdagen bezorgservice is het belangrijk dat u binnen 24 uur reageert op dit mailbericht!<br><br>\
+                                    Zonder tegenbericht wordt uw bestelling ongewijzigd doorgevoerd. <br><br>\
+                                {standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='https://toop.nl/uitleg.html'> <br> <br> <img src='cid:{image_cid2[1:-1]}' alt={naam_shop}></body></html>",subtype="html""",)
 
         with open(f"afbeelding_met_uitleg_{info['afbeelding']}.png", "rb") as img:
             maintype, subtype = mimetypes.guess_type(img.name)[0].split("/")
@@ -1378,9 +1390,293 @@ def process_if_replays_juiste_product(conn):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         headers = message["payload"]["headers"]
-        order_nr = re.search(r"\?\!\s*(.*?)\s*✅", [i["value"] for i in headers if i["name"] == "Subject"][0].rsplit(":")[-1]).group(1)
-        set_replay_mailsend_db_bol(order_nr)
-        add_label_processed_verzending(conn, message_treads_id)
+        match = re.search(r"\?\!\s*(.*?)\s*✅", [i["value"] for i in headers if i["name"] == "Subject"][0].rsplit(":")[-1])
+        if match:  # Check if a match was found
+            order_nr = match.group(1)
+            set_replay_mailsend_db_bol(order_nr)
+            add_label_processed_verzending(conn, message_treads_id)
+
+def klantvragen_bol(conn):
+    message_treads_ids = get_messages(
+            conn,
+            f'to:*@vangilsweb.nl OR to:*@toopbv.nl subject:"klantvraag in je verkoopaccount"',
+            gewenste_aantal_dagen="10d",
+        )
+    for message_treads_id in message_treads_ids:
+        message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
+        headers = message["payload"]["headers"]
+        try:
+            # print(next((header["value"] for header in message["payload"]["headers"] if header["name"] == "Subject"), "Subject header not found."))
+            order_nr = re.search(r"bestelnummer \s*([A-Za-z0-9-]+)", [i["value"] for i in headers if i["name"] == "Subject"][0]).group(1).replace("-","")
+            mail_body = get_body_email(message)
+            klantvragen_url = mail_body.xpath("//*[contains(text(),'Klantvraag')]/../a/@href")[0]
+        except (ValueError, AttributeError) as e:
+            add_label_processed_verzending(conn, message_treads_id)
+            mark_read(conn, message_treads_id)
+            logger.error(f"orderid not found in email header {e}")
+            continue
+        try:
+            _, webwinkel, to, _ = re.split("[@ .]", [i["value"] for i in headers if i["name"] == "To"][0])
+        except ValueError as e:
+            webwinkel, to, _ = re.split("[@ .]", [i["value"] for i in headers if i["name"] == "To"][0])
+        winkel = {"alldayelektro": "_ADE", "info": "_TB", "tpshopper": "_TS", "typischelektro": "_TE"}
+        winkel_short = winkel.get(webwinkel)
+        if order_nr:
+            odin_order_nr = f"{order_nr}{winkel_short}"
+            try:
+                with engine.begin() as db_conn:
+                    sql = text("UPDATE orders_bol SET klantvragen = :klantvragen, klantvragen_url =:klantvragen_url  WHERE orderid = :orderid")
+                    db_conn.execute(sql, {"klantvragen": True, "klantvragen_url":klantvragen_url, "orderid": odin_order_nr})
+                    add_label_processed_verzending(conn, message_treads_id)
+                    mark_read(conn, message_treads_id)
+            except Exception as e:
+                logger.error(f"orderid not found {odin_order_nr} {e}")
+
+
+def verkrijgen_shipmentids_bol():
+    # doorlopen van https://api.bol.com/retailer/public/redoc/v10/retailer.html#tag/Shipments/operation/get-shipments om all shipmentid's te krijgen, eerst locken, want dit kan prima 1 keer per dag.
+    LOCK_FILE = Path("shipment.txt")
+    TARGET_HOUR = 8
+
+    if datetime.datetime.now().hour < TARGET_HOUR and LOCK_FILE.exists():
+        try:
+            LOCK_FILE.unlink()
+        except Exception:
+            pass  # Ignore errors on lock file removal
+
+    if LOCK_FILE.exists():
+        return
+
+
+    LOCK_FILE.touch()
+    for winkel, credentials in config["bol_winkels_api"].items():
+        bulk_updates = []
+        user_key, passkey, winkel_name, winkel_short = credentials.split(",")
+        try:
+            auth_response = httpx.post(
+                "https://login.bol.com/token",
+                data={"grant_type": "client_credentials"},
+                auth=(user_key, passkey),
+            )
+            auth_response.raise_for_status()
+            access_token = auth_response.json().get("access_token")
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            logger.error(f"Authentication failed for {winkel_name}: {e}")
+            continue
+
+        session = httpx.Client(headers={
+            "Accept": "application/vnd.retailer.v10+json",
+            "Authorization": f"Bearer {access_token}",
+        })
+
+        for page in range(1,3):
+            try:
+                response = session.get(
+                    f"https://api.bol.com/retailer/shipments?page={page}"
+                )
+                response.raise_for_status()
+            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                logger.error(f"Request failed for {winkel_name}: {e}")
+                break
+
+            if not (shipments := response.json().get("shipments", [])):
+                break
+
+            for shipment in shipments:
+                shipment_id = shipment.get("shipmentId")
+                shipment_items = shipment.get("shipmentItems", [])
+
+                if shipment_id and shipment_items:
+                    bulk_updates.append({
+                        "shipmentid": shipment_id,
+                        "order_item_id": shipment_items[0].get("orderItemId"),
+                        "order_item_ean": shipment_items[0].get("ean")
+                    })
+        if bulk_updates:
+            try:
+                update_query = text(
+                    "UPDATE orders_info_bol SET shipmentid = :shipmentid "
+                    "WHERE order_orderitemid = :order_item_id AND order_ean = :order_item_ean"
+                )
+                
+                with engine.begin() as connection:
+                    connection.execute(update_query, bulk_updates)
+                
+                logger.info(f"Bulk updated {len(bulk_updates)} shipment records")
+            
+            except Exception as e:
+                logger.error(f"Bulk update failed: {e}")
+                # Optionally, fallback to individual updates if bulk fails
+                for update in bulk_updates:
+                    try:
+                        with engine.begin() as connection:
+                            connection.execute(update_query, update)
+                    except Exception as individual_e:
+                        logger.error(f"Failed to update individual record: {update}, Error: {individual_e}")
+
+@dataclass
+class RateLimitData:
+    window: int = 0      # Current 1-minute window (timestamp)
+    count: int = 0 
+
+def automatische_facturen_bol():
+    query = """
+        SELECT
+            O.orderid,
+            order_ean,
+            shipmentid,
+            winkel_artikel
+        FROM 
+            orders_bol O 
+        LEFT JOIN 
+            orders_info_bol I 
+        ON
+            O.orderid = I.orderid 
+        WHERE
+            shipmentid IS NOT NULL
+            AND I.factuur_verstuurd IS NULL
+            AND O.billingdetails_countrycode IN ('NL', 'BE')
+        ORDER BY
+            winkel_artikel DESC, O.orderid ASC
+            """
+    try:
+        with engine.connect() as connection:
+            nog_geen_factuur_verzonden = connection.execute(text(query)).mappings().all()
+    except SQLAlchemyError as e:
+        logger.error(f"Database query failed: {e}")
+        return
+    
+    winkels = {"ADE": "vangils", "TB": "toop", "TS": "toop", "TE": "toop"}
+    odin_url = "https://toop.nl:25583/odin_website/pdf_factuur_maken"
+    # odin_url = "http://127.0.0.1:7002/odin_website/pdf_factuur_maken"
+    credentials_map = {}
+    for shop, credentials in config["bol_winkels_api"].items():
+        try:
+            user_key, passkey, winkel_name, winkel_short = [x.strip() for x in credentials.split(",")]
+            credentials_map[winkel_name] = (user_key, passkey, winkel_short)
+        except Exception as e:
+            logger.error(f"Unexpected error parsing credentials for '{shop}': {e}. Entry: '{credentials}'")
+            continue
+
+    current_shop = None
+    current_session = None
+    invoice_upload_rate_limiter = RateLimitData()
+    MAX_REQUESTS_PER_MINUTE = 25
+
+    for factuur in nog_geen_factuur_verzonden:
+        order_shop = factuur['winkel_artikel']
+        if order_shop not in credentials_map:
+            logger.error(f"No credentials configured for shop name: {order_shop} (Order ID: {factuur['orderid']}). Skipping.")
+            continue
+
+        # Shop changed - reauthenticate
+        if order_shop != current_shop:
+            if current_session:
+                current_session.close()
+                # current_shop = None # current_shop is set below or loop continues
+                # current_session = None # current_session is set below or loop continues
+
+            if order_shop not in credentials_map:
+                logger.error(f"No credentials found for {order_shop} when trying to re-authenticate.")
+                current_shop = None
+                current_session = None
+                continue
+
+            try:
+                user_key, passkey, winkel_short = credentials_map[order_shop]
+                auth_response = httpx.post(
+                    "https://login.bol.com/token",
+                    data={"grant_type": "client_credentials"},
+                    auth=(user_key, passkey),
+                    timeout=30
+                )
+                auth_response.raise_for_status()
+                access_token = auth_response.json().get('access_token')
+                if not access_token:
+                    logger.error(f"Authentication for {order_shop} (UserKey: {user_key}) succeeded but no access_token in response: {auth_response.json()}")
+                    current_shop = None
+                    current_session = None
+                    continue
+
+                current_session = httpx.Client(
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/vnd.retailer.v10+json"
+                    },
+                    timeout=30
+                )
+                current_shop = order_shop
+                logger.info(f"Authenticated for {order_shop}")
+
+            except Exception as e:
+                logger.error(f"General auth failed for {order_shop}: {str(e)}")
+                current_shop = None
+                current_session = None
+                continue
+
+        if current_session:
+            # try:
+                # Generate PDF
+                with httpx.Client(verify=False) as client:
+                    verkrijgen_factuur = client.get(f"{odin_url}/{factuur['orderid']}/{factuur['order_ean']}/bol/{winkels.get(factuur["orderid"].split("_")[1]) if "_" in factuur["orderid"] else None}")
+                    verkrijgen_factuur.raise_for_status()
+                    
+                files = {
+                        "invoice": (
+                            f"invoice_{factuur['orderid']}.pdf",
+                            verkrijgen_factuur.content,
+                            "application/pdf"
+                        )
+                    }
+
+                current_time = int(time.time())
+                current_minute_window = current_time // 60
+
+                
+                if current_minute_window != invoice_upload_rate_limiter.window:
+                    invoice_upload_rate_limiter.window = current_minute_window
+                    invoice_upload_rate_limiter.count = 0
+                    logger.debug(f"Rate limit window reset for invoice uploads at {current_minute_window}")
+
+                if invoice_upload_rate_limiter.count >= MAX_REQUESTS_PER_MINUTE:
+                    sleep_duration = 60 - (current_time % 60)
+                    logger.info(f"Invoice upload rate limit reached ({MAX_REQUESTS_PER_MINUTE}/min). Sleeping for {sleep_duration} seconds.")
+                    time.sleep(sleep_duration)
+                    # After sleeping, we are in a new window
+                    invoice_upload_rate_limiter.window = (current_time + sleep_duration) // 60
+                    invoice_upload_rate_limiter.count = 0
+                    logger.debug(f"Rate limit window reset after sleep for invoice uploads at {invoice_upload_rate_limiter.window}")
+
+
+                invoice_upload_rate_limiter.count += 1
+                logger.debug(f"Invoice upload attempt {invoice_upload_rate_limiter.count}/{MAX_REQUESTS_PER_MINUTE} for order {factuur['orderid']}.")
+                
+                upload_response = current_session.post(
+                    f"https://api.bol.com/retailer/shipments/invoices/{factuur['shipmentid']}",
+                    files=files
+                )
+                upload_response.raise_for_status() # Will raise an exception for 4xx/5xx responses
+                
+                logger.info(f"Invoice upload successful for {factuur['orderid']}, status: {upload_response.status_code}, response: {upload_response.text}")
+
+                if upload_response.status_code == 202:
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("""
+                                    UPDATE orders_info_bol 
+                                    SET factuur_verstuurd = 1 
+                                    WHERE orderid = :orderid
+                                """),
+                                {"orderid": factuur["orderid"]}
+                            )
+                            logger.info(f"Successfully marked order {factuur['orderid']} as sent")
+                            
+                    except SQLAlchemyError as e:
+                        logger.error(f"Database update failed for {factuur['orderid']}: {str(e)}")
+                else:
+                    logger.error(f"Failed to upload invoice for {factuur['orderid']}: {upload_response.text}")
+
 
 if __name__ == "__main__":
     credentials = get_autorisation_gooogle_api()
@@ -1399,7 +1695,7 @@ if __name__ == "__main__":
         config["excellent dropship tt"]["wachtwoord"],
     )
 
-    # # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
+    # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
     process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher ")
     process_bol_orders(connection, product_type="waterreservoir", zoek_string="Waterreservoir")
     process_bol_orders(connection, product_type="padhouder", zoek_string="padhouder")
@@ -1411,5 +1707,7 @@ if __name__ == "__main__":
     process_bol_orders(connection, product_type="flessenrek", zoek_string="Flessenrek")
 
     process_if_replays_juiste_product(connection)
-
     process_visynet_api()
+    klantvragen_bol(connection)
+    verkrijgen_shipmentids_bol()
+    automatische_facturen_bol()

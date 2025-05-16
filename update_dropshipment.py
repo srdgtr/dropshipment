@@ -295,10 +295,10 @@ with engine.connect() as connection:
                     )
                     shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
                 except AttributeError:
-                    if datetime.datetime.now().time() >= datetime.time(10, 0):
-                        shipment_on_depot = True
-                    else:
-                        shipment_on_depot = None
+                    # if datetime.datetime.now().time() >= datetime.time(10, 0): # voor drukke periodes auto afmelden
+                    #     shipment_on_depot = True
+                    # else:
+                    shipment_on_depot = None
                 if shipment_on_depot:
                     order_dict["verzendpartner"] = "DPD-NL"
                     bol_at_depot.append(order_dict)
