@@ -1311,18 +1311,18 @@ def gmail_send_mail(
         image_cid2 = make_msgid(domain=f"{kvk_winkel}.nl")
         if kvk_winkel == "toopbv":
             message["From"] = "info@toopbv.nl"
-            sign_picture = "toop.png"
+            sign_picture = "vangils - TOOP Fulfilment.jpg"
             naam_shop = "toop"
         elif kvk_winkel == "vangilsweb":
             message["From"] = "info@vangilsweb.nl"
-            sign_picture = "vangils.jpg"
+            sign_picture = "vangils - TOOP Fulfilment.jpg"
             naam_shop = "vangils web" 
-        message.add_alternative(f"""<html><body>{standaard_begin_text}{info['type_device']} Vanwege onze vlugge orderverwerking is het belangrijk dat u tijdig reageert op dit mailbericht! <br>\
+        message.add_alternative(f"<html><body>{standaard_begin_text}{info['type_device']} Vanwege onze vlugge orderverwerking is het belangrijk dat u tijdig reageert op dit mailbericht! <br>\
                                     Heeft u besteld voor 00:00 uur, dan hebben wij vandaag voor 9:00 uur de juiste bestelgegevens nodig om de 24 uur service te kunnen leveren.<br>\
                                     Heeft u besteld voor 15:00 uur, dan hebben wij vandaag voor 15:30 uur de juiste bestelgegevens nodig om de 24 uur service te kunnen leveren.<br><br>\
                                     Om gebruik te kunnen blijven maken van onze 1-3 werkdagen bezorgservice is het belangrijk dat u binnen 24 uur reageert op dit mailbericht!<br><br>\
-                                    Zonder tegenbericht wordt uw bestelling ongewijzigd doorgevoerd. <br><br>\
-                                {standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='https://toop.nl/uitleg.html'> <br> <br> <img src='cid:{image_cid2[1:-1]}' alt={naam_shop}></body></html>",subtype="html""",)
+                                    Zonder tegenbericht wordt uw bestelling ongewijzigd doorgevoerd.\
+                                {standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='https://toop.nl/uitleg.html'> <br> <br> <img src='cid:{image_cid2[1:-1]}' alt={naam_shop}></body></html>",subtype="html",)
 
         with open(f"afbeelding_met_uitleg_{info['afbeelding']}.png", "rb") as img:
             maintype, subtype = mimetypes.guess_type(img.name)[0].split("/")
@@ -1469,11 +1469,12 @@ def verkrijgen_shipmentids_bol():
             "Authorization": f"Bearer {access_token}",
         })
 
-        for page in range(1,3):
+        for page in range(1,5):
             try:
                 response = session.get(
                     f"https://api.bol.com/retailer/shipments?page={page}"
                 )
+                time.sleep(3)  # Respect rate limits
                 response.raise_for_status()
             except (httpx.RequestError, httpx.HTTPStatusError) as e:
                 logger.error(f"Request failed for {winkel_name}: {e}")
@@ -1616,7 +1617,7 @@ def automatische_facturen_bol():
             # try:
                 # Generate PDF
                 with httpx.Client(verify=False) as client:
-                    verkrijgen_factuur = client.get(f"{odin_url}/{factuur['orderid']}/{factuur['order_ean']}/bol/{winkels.get(factuur["orderid"].split("_")[1]) if "_" in factuur["orderid"] else None}")
+                    verkrijgen_factuur = client.get(f"{odin_url}/{factuur['orderid']}/{factuur['order_ean']}/bol/{winkels.get(factuur['orderid'].split('_')[1]) if '_' in factuur['orderid'] else None}")
                     verkrijgen_factuur.raise_for_status()
 
                 files = {
@@ -1654,7 +1655,7 @@ def automatische_facturen_bol():
                 )
                 upload_response.raise_for_status() # Will raise an exception for 4xx/5xx responses
                 
-                logger.info(f"Invoice upload successful for {factuur['orderid']}, status: {upload_response.status_code}, response: {upload_response.text}")
+                logger.info(f"Invoice upload successful for {factuur['orderid']}, status: {upload_response.status_code}, response: {upload_response.json()['status']}")
 
                 if upload_response.status_code == 202:
                     try:
