@@ -259,16 +259,17 @@ with engine.connect() as connection:
                 "X-Requested-With": "XMLHttpRequest",
             }
             response = httpx.get(
-                f"https://track.mydynalogic.eu/api/transportorder/full/ordernumber/{order_dict['order_id_leverancier']}/zipcode/{order_dict['shipmentdetails_zipcode']}",
+                f"https://track.mydynalogic.eu/api/transportorder/full/ordernumber/{order_dict['t_t_dropshipment'].split('=')[-1]}/zipcode/{order_dict['shipmentdetails_zipcode']}",
                 headers=headers,
             )
             if response.headers.get("Content-Type").startswith("application/json"):
                 shipment_info = response.json()
                 if len(order_dict["order_id_leverancier"]) > 1:
                     order_dict["order_id_leverancier"] = order_dict["order_id_leverancier"].split(" ", 1)[-1]
-                if shipment_info["data"]["ActiveStep"] >= 3:
-                    order_dict["verzendpartner"] = "DYL"
-                    bol_at_depot.append(order_dict)
+                active_step = shipment_info.get("data", {}).get("ActiveStep")
+                if active_step is not None and active_step >= 3:
+                        order_dict["verzendpartner"] = "DYL"
+                        bol_at_depot.append(order_dict)
         elif "gls" in order_dict["t_t_dropshipment"]:
             response = httpx.get(
                 f"https://gls-group.eu/app/service/open/rest/GROUP/en/rstt029?match={order_dict['order_id_leverancier']}"
@@ -279,31 +280,31 @@ with engine.connect() as connection:
                 bol_at_depot.append(order_dict)
             else:
                 logger.info(f"nog niet verwerkt door gls,{order_dict['t_t_dropshipment']}")
-        elif "dpd" in order_dict["t_t_dropshipment"]:
-            time.sleep(10) # prevent 429 errors, by slowing down
-            if len(order_dict["order_id_leverancier"]) == 14:
-                response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('=')[-1]}")
-            else:
-                response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('/')[-1][:-1]}")
-            if response.status_code == 429:
-                break
-            if response.headers.get("Content-Type").startswith("application/json"):
-                shipment_info = response.json()
-                try:
-                    status_info = (
-                        shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
-                    )
-                    shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
-                except AttributeError:
-                    # if datetime.datetime.now().time() >= datetime.time(10, 0): # voor drukke periodes auto afmelden
-                    #     shipment_on_depot = True
-                    # else:
-                    shipment_on_depot = None
-                if shipment_on_depot:
-                    order_dict["verzendpartner"] = "DPD-NL"
-                    bol_at_depot.append(order_dict)
-            else:
-                logger.info(f"niet bekend bij api dpd,{order_dict['t_t_dropshipment']}")
+        # elif "dpd" in order_dict["t_t_dropshipment"]:
+        #     time.sleep(10) # prevent 429 errors, by slowing down
+        #     if len(order_dict["order_id_leverancier"]) == 14:
+        #         response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('=')[-1]}")
+        #     else:
+        #         response = httpx.get(f"https://extranet.dpd.de/rest/plc/nl_NL/{order_dict['t_t_dropshipment'].split('/')[-1][:-1]}")
+        #     if response.status_code == 429:
+        #         break
+        #     if response.headers.get("Content-Type").startswith("application/json"):
+        #         shipment_info = response.json()
+        #         try:
+        #             status_info = (
+        #                 shipment_info.get("parcellifecycleResponse").get("parcelLifeCycleData").get("statusInfo")
+        #             )
+        #             shipment_on_depot = any(status["status"] == "AT_DELIVERY_DEPOT" for status in status_info)
+        #         except AttributeError:
+        #             # if datetime.datetime.now().time() >= datetime.time(10, 0): # voor drukke periodes auto afmelden
+        #             #     shipment_on_depot = True
+        #             # else:
+        #             shipment_on_depot = None
+        #         if shipment_on_depot:
+        #             order_dict["verzendpartner"] = "DPD-NL"
+        #             bol_at_depot.append(order_dict)
+        #     else:
+        #         logger.info(f"niet bekend bij api dpd,{order_dict['t_t_dropshipment']}")
 
 
 def custom_sort(item):

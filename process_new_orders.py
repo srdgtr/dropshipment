@@ -1062,7 +1062,6 @@ def process_dpd_messages(conn):
         except Exception as e:
             logger.error(f"stap 3 dpd {mail_info} failed {e}")
 
-
 def process_postnl_ur_messages(conn):
     # get send info united retail.
     message_treads_ids = get_messages(conn, 'from: info@vangilsweb.nl subject:("Uw bestelling is verzonden")')
@@ -1116,6 +1115,38 @@ def process_postnl_ur_messages(conn):
         mark_read(conn, message_treads_id)
         add_label_processed_verzending(conn, message_treads_id)
 
+def process_eltric_messages(conn):
+    message_treads_ids = get_messages(conn, 'from: info@eltric.com subject:("Versand E-Mail - eltric GmbH")')
+    for message_treads_id in message_treads_ids:
+        message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
+        mail_body = get_body_email(message)
+        # print(etree.tostring(mail_body, pretty_print=True, encoding='unicode'))
+        if mail_body is not None and mail_body.xpath("//*[contains(text(),'4823AB Breda')]"):
+            logger.info(f"pakket voor ons zelf")
+            mark_read(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id)
+        elif mail_body is not None:
+            mail_info = {
+                "dienst": "electric",
+                "tt_url": mail_body.xpath("//*[contains(text(),'Tracking-Nummer')]/../../tr[2]//a/@href")[0],
+                "tt_num": mail_body.xpath("//*[contains(text(),'Tracking-Nummer')]/../../tr[2]//a/text()")[0],
+            }
+            try:
+                if "PORTAL-WEB" in mail_info["tt_url"]: # voor gls want link klopt niet !!
+                    mail_info["tt_url"] = f"https://gls-group.eu/EU/en/parcel-tracking?match={mail_info['tt_num']}"
+                mail_info["first_name"], *mail_info["last_name"] = mail_body.xpath("//*[contains(text(),'Lieferung-Adresse')]/../td[2]/text()")[0].strip().split(" ", 1)
+                mail_info["last_name"]= mail_info["last_name"][0]
+                mail_info["street"], mail_info["house_number"] = mail_body.xpath("//*[contains(text(),'Lieferung-Adresse')]/..//../tr[6]/td[2]/text()")[0].strip().split(" ", 1)
+                _ ,mail_info["postcode"], mail_info["city"] = mail_body.xpath("//*[contains(text(),'Lieferung-Adresse')]/..//../tr[7]/td[2]/text()")[0].strip().split(" ", 2)
+                get_order_info_db = get_set_info_database(mail_info)
+                if get_order_info_db:
+                    mark_read(conn, message_treads_id)
+                add_label_processed_verzending(conn, message_treads_id)
+            except Exception as e:
+                logger.error(f"stap 3 eltric {mail_info} failed {e}")
+        else:
+            logger.error(f"Mail body is None for message id {message_treads_id}")
+
 
 def process_beekman_messages(conn):
     query = """
@@ -1146,20 +1177,22 @@ def process_beekman_messages(conn):
         'Accept': 'application/json',
         'Authorization': f'Bearer {config.get("beekman", "api_key")}'
     }
-    for order_info in open_orders:
-        order_status = session.get(f"https://rest.beekman.nl/dropshipment?id={order_info['verkooporder_id_leverancier']}", headers=headers)
+    for order in open_orders:
+        order_status = session.get(f"https://rest.beekman.nl/dropshipment?id={order['verkooporder_id_leverancier']}", headers=headers)
         if order_status.status_code == 200:
-            if order_status.json().get("error"):
-                logger.error(f"{order_info['orderid']} {order_status.json()['error_message']}")
+            order_info = order_status.json()
+            if order_info.get("error"):
+                logger.error(f"{order_info['orderid']} {order_info['error_message']}")
             else:
-                shipments = order_status.json().get("shipments", [])
+                shipments = order_info.get("shipments", [])
                 for shipment in shipments:
-                    trackcode = shipment.get('trackcode')
+                    trackcode = shipment.get('trackcode').split('|')[0]
                     trackurl = shipment.get('trackurl')
-                    for item in shipment.get('items'):
-                        if "".join(filter(str.isdigit, order_info.get("offer_sku"))) == item.get('code'):
-                            set_order_info_db_bol(order_info, trackurl, trackcode)
-                else:
+                    if order_info.get('items'):
+                        for item in order_info.get('items').get('articles', []):
+                            if "".join(filter(str.isdigit, order.get("offer_sku"))) == item.get('code'):
+                                set_order_info_db_bol(order, trackurl, trackcode)
+                    if not trackcode:
                        logger.info(f"{order_info.get('orderid')} Nog geen T&T nummer bekend ")  
 
     message_treads_ids = get_messages(conn, 'from:(*@beekman.nl) "Verzend bevestiging"')
@@ -1231,10 +1264,15 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
             ftp.retrlines(f"RETR {file}", file_lines.append)
             xml_content = "\n".join(file_lines)
             parse_xml = et.fromstring(xml_content)
-            if parse_xml.find(".//carrier_id").text == "DYNALOGIC":
-                logger.info(f"DYNALOGIC order ")  
-                order_id = parse_xml.find(".//trackingnumber").text.split("=")[-1]
+            if parse_xml.find(".//carrier_id").text == "DPD":
+                logger.info(f"transporteur {parse_xml.find('.//carrier_id').text}")
+                order_id = parse_xml.find(".//OrderExternalId_01").text
+                tt_number = parse_xml.find(".//trackingnumber").text
+                track_en_trace_url = parse_xml.find(".//trackingurl").text
+                if not track_en_trace_url:
+                    track_en_trace_url = f"https://www.dpdgroup.com/be/mydpd/my-parcels/search?lang=nl&parcelNumber={tt_number }"
             else:
+                logger.info(f"transporteur {parse_xml.find('.//carrier_id').text}")
                 order_id = parse_xml.find(".//OrderExternalId_01").text
                 tt_number = parse_xml.find(".//trackingnumber").text
                 track_en_trace_url = parse_xml.find(".//trackingurl").text
@@ -1244,19 +1282,18 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
                     with engine.connect() as connection:
                         order_info = connection.exec_driver_sql(info_bol_db).first()
                     set_order_info_db_bol(order_info, track_en_trace_url, tt_number)
-                    logger.info(f"{order_info} order bol tt exellent toegevoegd ")  
+                    logger.info(f"{order_info} order bol tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")  
                 elif "-" in order_id:
                     info_blok_db = f"SELECT I.order_line_id FROM blokker_orders O LEFT JOIN blokker_order_items I ON O.commercialid = I.commercialid WHERE order_id = '{order_id}'"
                     with engine.connect() as connection:
                         order_line_id = connection.exec_driver_sql(info_blok_db).first()
                     set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
-                    logger.info(f"{order_info} order blokker tt exellent toegevoegd ")
+                    logger.info(f"{order_info} order blokker tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")
                 ftp.delete(file)
+                pass
             else:
                 if parse_xml.find(".//customer_line_id").text == "Manually Inserted":
                     ftp.delete(file)
-
-    # nog iets verzinnen om de dynlogic orders te verwerken
 
 
 def gmail_send_mail(
@@ -1469,7 +1506,7 @@ def verkrijgen_shipmentids_bol():
             "Authorization": f"Bearer {access_token}",
         })
 
-        for page in range(1,5):
+        for page in range(1,10):
             try:
                 response = session.get(
                     f"https://api.bol.com/retailer/shipments?page={page}"
@@ -1679,22 +1716,71 @@ def automatische_facturen_bol():
 if __name__ == "__main__":
     credentials = get_autorisation_gooogle_api()
     connection = gmail_create_connection(credentials)
-    process_beekman_messages(connection)
-    process_bpost_messages(connection)
-    process_dhl_messages(connection)
-    process_dynalogic_messages(connection)
-    process_transmision_messages(connection)
-    process_gls_messages(connection)
-    process_dpd_messages(connection)
-    process_postnl_ur_messages(connection)
-    process_ftp_files_tt_exl(
-        config["excellent dropship tt"]["server"],
-        config["excellent dropship tt"]["login"],
-        config["excellent dropship tt"]["wachtwoord"],
-    )
+    try:
+        process_beekman_messages(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process Beekman messages: {e}")
+
+    try:
+        process_bpost_messages(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process Bpost messages: {e}")
+    try:
+        process_dhl_messages(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process DHL messages: {e}")
+
+    try:
+        process_dynalogic_messages(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process Dynalogic messages: {e}")
+
+    try:
+        process_transmision_messages(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process Transmision messages: {e}")
+
+    try:
+        process_gls_messages(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process GLS messages: {e}")
+
+    try:
+        process_dpd_messages(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process DPD messages: {e}")
+
+    try:
+        process_postnl_ur_messages(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process PostNL UR messages: {e}")
+    try:
+        process_eltric_messages(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process electric messages: {e}")       
+    try:
+        process_ftp_files_tt_exl(
+            config["excellent dropship tt"]["server"],
+            config["excellent dropship tt"]["login"],
+            config["excellent dropship tt"]["wachtwoord"],
+        )
+    except Exception as e:
+        print(f"ERROR: Failed to process FTP files: {e}")
+    try:
+        process_visynet_api()
+    except Exception as e:
+        print(f"ERROR: Failed to process Visynet API: {e}")
+    try:
+        verkrijgen_shipmentids_bol()
+    except Exception as e:
+        print(f"ERROR: Failed to obtain Bol shipment IDs: {e}")
+    try:
+        automatische_facturen_bol()
+    except Exception as e:
+        print(f"ERROR: Failed to process automatic Bol invoices: {e}")
 
     # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
-    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher ")
+    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher -Philips")
     process_bol_orders(connection, product_type="waterreservoir", zoek_string="Waterreservoir")
     process_bol_orders(connection, product_type="padhouder", zoek_string="padhouder")
     process_bol_orders(connection, product_type="padhouder", zoek_string="Capsule houder")
@@ -1705,7 +1791,4 @@ if __name__ == "__main__":
     process_bol_orders(connection, product_type="flessenrek", zoek_string="Flessenrek")
 
     process_if_replays_juiste_product(connection)
-    process_visynet_api()
     klantvragen_bol(connection)
-    verkrijgen_shipmentids_bol()
-    automatische_facturen_bol()
