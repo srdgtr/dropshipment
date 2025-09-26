@@ -5,7 +5,6 @@ import io
 import json
 import logging
 import mimetypes
-import os
 import pickle
 import re
 import subprocess
@@ -1290,14 +1289,15 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
                     set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
                     logger.info(f"{order_info} order blokker tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")
                 ftp.delete(file)
-                pass
+                # pass
             else:
                 if parse_xml.find(".//customer_line_id").text == "Manually Inserted":
                     ftp.delete(file)
+                    # pass
 
 
 def gmail_send_mail(
-    conn, order_id, kvk_winkel, bol_email, waarvoor
+    conn, order_id, kvk_winkel, bol_email, plaats_van_label, artikel_soort, aangepaste_levering = None
 ):  # meerdere bol winkel onder zelfde kvk, maar kvk bepaald de layout
     """Create and insert a draft email.
     Print the returned draft's message and id.
@@ -1305,75 +1305,168 @@ def gmail_send_mail(
     try:
         # html text for mail
         standaard_begin_text = "Beste klant,<br><br>Bedankt voor uw bestelling!<br><br>We willen er zeker van zijn dat het onderdeel dat u heeft besteld perfect in uw apparaat past. Veel modellen lijken op elkaar, maar kleine verschillen kunnen ervoor zorgen dat het onderdeel niet past. Daarom helpen we u graag om dit vooraf te controleren.<br><br>"
+        standaard_begin_text_aangepaste_levering = "Beste klant,<br><br>Bedankt voor uw bestelling!<br><br>"
         standaard_eind_text = "<br><br><br>Met vriendelijke groet,<br><br>Louise<br>"
-        appraat_begin = f"U heeft bij ons een {waarvoor} besteld voor uw "
-        appraat_eind = f". Nu blijkt uit ervaring dat er vaak wat onduidelijkheid heerst over het type {waarvoor} dat er nodig is.<br>"
+        appraat_begin = f"U heeft bij ons een {artikel_soort} besteld voor uw "
+        appraat_eind = f". Nu blijkt uit ervaring dat er vaak wat onduidelijkheid heerst over het type {artikel_soort} dat er nodig is.<br>"
         typeplaatje_begin = "Mocht u twijfelen of u het juiste exemplaar heeft besteld, willen wij u vragen om een foto te maken van het typeplaatje dat op uw apparaat staat. In sommige gevallen zit er geen typeplaatje op het apparaat maar staat het typenummer in het apparaat zelf gedrukt. Het typeplaatje vindt u meestal aan de "
         typeplaatje_midden = " van uw apparaat"
-        typeplaatje_midden_2 = "en bestaat uit een combinatie van letters en cijfers. Let op! Ook de cijfers na het /-teken zijn belangrijk. Een foto van uw "
-        typeplaatje_eind = f" of {waarvoor} is niet voldoende om het typenummer te bepalen. <br> <br> Mocht u het typeplaatje niet kunnen vinden laat het ons dan weten, wij helpen u alsnog graag verder.<br> <br> In de bijlage sturen wij een afbeelding mee van de meest voorkomende plaatsen waar u het typenummer kunt vinden op uw apparaat.<br><br> "
+        typeplaatje_midden_2 = " en bestaat uit een combinatie van letters en cijfers. Let op! Ook de cijfers na het /-teken zijn belangrijk. Een foto van uw "
+        typeplaatje_eind = f" of {artikel_soort} is niet voldoende om het typenummer te bepalen. <br> <br> Mocht u het typeplaatje niet kunnen vinden laat het ons dan weten, wij helpen u alsnog graag verder.<br> <br> In de bijlage sturen wij een afbeelding mee van de meest voorkomende plaatsen waar u het typenummer kunt vinden op uw apparaat.<br><br> "
+        typeplaatje_eind_zonder_bijlage = f" of {artikel_soort} is niet voldoende om het typenummer te bepalen. <br> <br> Mocht u het typeplaatje niet kunnen vinden laat het ons dan weten, wij helpen u alsnog graag verder.<br>"
 
         type_info = {
             "waterreservoir": {
-            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}onderkant{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind}",
+            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind}",
             "afbeelding": "padhouder",
             },
             "padhouder": {
-            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}onderkant{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind}",
+            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind}",
             "afbeelding": "padhouder",
             },
             "draaiplateau": {
-            "type_device": f"{appraat_begin}magnetron{appraat_eind} {typeplaatje_begin}achterkant of binnenkant{typeplaatje_midden}{typeplaatje_midden_2}magnetron{typeplaatje_eind}",
+            "type_device": f"{appraat_begin}magnetron{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}magnetron{typeplaatje_eind}",
             "afbeelding": "draaiplateau",
             },
             "deurbak": {
-            "type_device": f"{appraat_begin}koelkast{appraat_eind} {typeplaatje_begin}achterkant{typeplaatje_midden} of in het koelgedeelte, boven de bovenste plank op een van de zijwanden van de koelkast {typeplaatje_midden_2}koelkast{typeplaatje_eind}",
+            "type_device": f"{appraat_begin}koelkast{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden} of in het koelgedeelte, boven de bovenste plank op een van de zijwanden van de koelkast {typeplaatje_midden_2}koelkast{typeplaatje_eind}",
             "afbeelding": "koelkast",
             },
             "groentelade": {
-            "type_device": f"{appraat_begin}koelkast{appraat_eind} {typeplaatje_begin}achterkant{typeplaatje_midden} of in het koelgedeelte, boven de bovenste plank op een van de zijwanden van de koelkast {typeplaatje_midden_2}koelkast{typeplaatje_eind}",
+            "type_device": f"{appraat_begin}koelkast{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden} of in het koelgedeelte, boven de bovenste plank op een van de zijwanden van de koelkast {typeplaatje_midden_2}koelkast{typeplaatje_eind}",
             "afbeelding": "koelkast",
             },
             "flessenrek": {
-            "type_device": f"{appraat_begin}koelkast{appraat_eind} {typeplaatje_begin}achterkant{typeplaatje_midden} of in het koelgedeelte, boven de bovenste plank op een van de zijwanden van de koelkast {typeplaatje_midden_2}koelkast{typeplaatje_eind}",
+            "type_device": f"{appraat_begin}koelkast{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden} of in het koelgedeelte, boven de bovenste plank op een van de zijwanden van de koelkast {typeplaatje_midden_2}koelkast{typeplaatje_eind}",
             "afbeelding": "koelkast",
             },
+            "zetgroep": {
+            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind}",
+            "afbeelding": "padhouder",
+            },
+            # Stofzuigermonden en slangen hebben geen bijlage
+            "zuigmond": {
+            "type_device": f"{appraat_begin}stofzuiger{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}stofzuiger{typeplaatje_eind_zonder_bijlage}",
+            },
+            "parketborstel": {
+            "type_device": f"{appraat_begin}stofzuiger{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}stofzuiger{typeplaatje_eind_zonder_bijlage}",
+            },
+            "borstel": {
+            "type_device": f"{appraat_begin}stofzuiger{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}stofzuiger{typeplaatje_eind_zonder_bijlage}",
+            },
+            "vloerborstel": {
+            "type_device": f"{appraat_begin}stofzuiger{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}stofzuiger{typeplaatje_eind_zonder_bijlage}",
+            },
+            "combimond": {
+            "type_device": f"{appraat_begin}stofzuiger{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}stofzuiger{typeplaatje_eind_zonder_bijlage}",
+            },
+            "stofzuigermond": {
+            "type_device": f"{appraat_begin}stofzuiger{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}stofzuiger{typeplaatje_eind_zonder_bijlage}",
+            },
+            "stofzuigerslang": {
+            "type_device": f"{appraat_begin}stofzuiger{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}stofzuiger{typeplaatje_eind_zonder_bijlage}",
+            },
+            "slang": {
+            "type_device": f"{appraat_begin}stofzuiger{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}stofzuiger{typeplaatje_eind_zonder_bijlage}",
+            },
+            "verlengslang": {
+            "type_device": f"{appraat_begin}stofzuiger{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}stofzuiger{typeplaatje_eind_zonder_bijlage}",
+            },
+            #opzetkam
+            "opzetkam": {
+            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind_zonder_bijlage}",
+            },
+            "kam": {
+            "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind_zonder_bijlage}",
+            },
         }
-        info = type_info.get(waarvoor)
-        # info["type_device"]
+        if not aangepaste_levering:
+            default_info = {
+                "type_device": f"{appraat_begin}apparaat{appraat_eind} {typeplaatje_begin}{plaats_van_label}{typeplaatje_midden}{typeplaatje_midden_2}apparaat{typeplaatje_eind_zonder_bijlage}"
+            }
+            info = type_info.get(artikel_soort, default_info)
+        else:
+            info = {
+                "type_device": (
+                    "Hieronder leest u belangrijke informatie over de levering van uw witgoedapparaat.<br><br>"
+                    "<b>BEZORGING</b><br>"
+                    "- Standaard leveren wij tot over de eerste drempel van uw woning of gebouw.<br>"
+                    "- Bevindt de voordeur zich niet op de begane grond? Dan bezorgen wij alleen boven als er een lift aanwezig is.<br>"
+                    "- Let op: wij tillen het apparaat niet via de trap naar boven.<br><br>"
+                    "Met deze leverwijze kunnen wij u een snellere service en scherpe prijs bieden.<br><br>"
+                    "<b>OUDE APPARATEN MEENEMEN</b><br>"
+                    "Wij nemen uw oude apparaat graag mee, mits:<br>"
+                    "- Het volledig is afgekoppeld.<br>"
+                    "- Het bij de voordeur klaarstaat op het moment van levering.<br>"
+                    "Staat het niet klaar? Dan kunnen we het helaas niet meenemen.<br><br>"
+                    "<b>EXTRA SERVICE (TEGEN MEERPRIJS)</b><br>"
+                    "Wilt u extra service, zoals plaatsing of installatie?<br>"
+                    "- Neem dan vooraf contact met ons op of reageer direct op deze e-mail.<br>"
+                    "- Zodra uw bestelling onderweg is, kunnen we dit niet meer toevoegen.<br>"
+                    "- De kosten zijn afhankelijk van uw locatie en toegankelijkheid.<br><br>"
+                    "<b>ZELF INSTALLEREN</b><br>"
+                    "Gaat u zelf installeren? Lees de handleiding goed door.<br>"
+                    "- Bij wasmachines moeten vóór het eerste gebruik altijd de transportbouten verwijderd worden.<br>"
+                    "- Als dit niet gebeurt, kan de machine zwaar trillen en vervalt uw recht op retournering.<br><br>"
+                    "Heeft u vragen? Neem gerust contact met ons op, wij helpen u graag verder."
+                ),
+            }
+
         message = EmailMessage()
         message["To"] = bol_email
+        # message["To"] = "test@kfvd.nl"
 
         image_cid = make_msgid(domain=f"{kvk_winkel}.nl")
         image_cid2 = make_msgid(domain=f"{kvk_winkel}.nl")
+        sign_picture = "vangils - TOOP Fulfilment.jpg"
         if kvk_winkel == "toopbv":
             message["From"] = "info@toopbv.nl"
-            sign_picture = "vangils - TOOP Fulfilment.jpg"
             naam_shop = "toop"
         elif kvk_winkel == "vangilsweb":
             message["From"] = "info@vangilsweb.nl"
-            sign_picture = "vangils - TOOP Fulfilment.jpg"
-            naam_shop = "vangils web" 
-        message.add_alternative(f"<html><body>{standaard_begin_text}{info['type_device']} Vanwege onze vlugge orderverwerking is het belangrijk dat u tijdig reageert op dit mailbericht! <br>\
-                                    Heeft u besteld voor 00:00 uur, dan hebben wij vandaag voor 9:00 uur de juiste bestelgegevens nodig om de 24 uur service te kunnen leveren.<br>\
-                                    Heeft u besteld voor 15:00 uur, dan hebben wij vandaag voor 15:30 uur de juiste bestelgegevens nodig om de 24 uur service te kunnen leveren.<br><br>\
-                                    Om gebruik te kunnen blijven maken van onze 1-3 werkdagen bezorgservice is het belangrijk dat u binnen 24 uur reageert op dit mailbericht!<br><br>\
-                                    Zonder tegenbericht wordt uw bestelling ongewijzigd doorgevoerd.\
-                                {standaard_eind_text}<img src='cid:{image_cid[1:-1]}' alt='https://toop.nl/uitleg.html'> <br> <br> <img src='cid:{image_cid2[1:-1]}' alt={naam_shop}></body></html>",subtype="html",)
+            naam_shop = "vangils web"
+        else:
+            # Set a default or raise an error if kvk_winkel is not recognized
+            naam_shop = "toop"
+            logger.warning(f"Unknown kvk_winkel '{kvk_winkel}', using default sign_picture and naam_shop.")
 
-        with open(f"afbeelding_met_uitleg_{info['afbeelding']}.png", "rb") as img:
-            maintype, subtype = mimetypes.guess_type(img.name)[0].split("/")
-            message.get_payload()[0].add_related(
-                img.read(), maintype=maintype, subtype=subtype, cid=image_cid, filename=f"afbeelding_met_uitleg_{info['afbeelding']}"
+        # Only include the image if there is an afbeelding
+        if not aangepaste_levering:
+            if isinstance(info, dict) and info.get('afbeelding'):
+                image_html = f"<img src='cid:{image_cid[1:-1]}' alt='https://toop.nl/uitleg.html'> <br> <br> "
+            else:
+                image_html = ""
+            message.add_alternative(
+                f"<html><body>{standaard_begin_text}{info['type_device']} Vanwege onze vlugge orderverwerking is het belangrijk dat u tijdig reageert op dit mailbericht! <br>\
+                    Heeft u besteld voor 00:00 uur, dan hebben wij vandaag voor 9:00 uur de juiste bestelgegevens nodig om de 24 uur service te kunnen leveren.<br>\
+                    Heeft u besteld voor 15:00 uur, dan hebben wij vandaag voor 15:30 uur de juiste bestelgegevens nodig om de 24 uur service te kunnen leveren.<br><br>\
+                    Om gebruik te kunnen blijven maken van onze 1-3 werkdagen bezorgservice is het belangrijk dat u binnen 24 uur reageert op dit mailbericht!<br><br>\
+                    Zonder tegenbericht wordt uw bestelling ongewijzigd doorgevoerd.\
+                {standaard_eind_text}{image_html}<img src='cid:{image_cid2[1:-1]}' alt={naam_shop}></body></html>",
+                subtype="html",
             )
 
-        with open(sign_picture, "rb") as img:
-            # know the Content-Type of the image
-            maintype, subtype = mimetypes.guess_type(img.name)[0].split("/")
-            message.get_payload()[0].add_related(
-                img.read(), maintype=maintype, subtype=subtype, cid=image_cid2, filename=sign_picture
+            # Attach the uitleg image only if afbeelding is present
+            if isinstance(info, dict) and info.get('afbeelding'):
+                with open(f"afbeelding_met_uitleg_{info['afbeelding']}.png", "rb") as img:
+                    maintype, subtype = mimetypes.guess_type(img.name)[0].split("/")
+                    message.get_payload()[0].add_related(
+                        img.read(), maintype=maintype, subtype=subtype, cid=image_cid, filename=f"afbeelding_met_uitleg_{info['afbeelding']}"
+                    )
+
+            with open(sign_picture, "rb") as img:
+                maintype, subtype = mimetypes.guess_type(img.name)[0].split("/")
+                message.get_payload()[0].add_related(
+                    img.read(), maintype=maintype, subtype=subtype, cid=image_cid2, filename=sign_picture
+                )
+
+            message["Subject"] = f"Juiste {artikel_soort} Besteld ?! {order_id} \U00002705 \U0000274C" #unicode for nice icons https://unicode.org/emoji/charts/full-emoji-list.html
+        else:
+            message.add_alternative(
+                f"<html><body>{standaard_begin_text_aangepaste_levering}{info['type_device']}{standaard_eind_text}</body></html>",
+                subtype="html",
             )
-        message["Subject"] = f"Juiste {waarvoor} Besteld ?! {order_id} \U00002705 \U0000274C" #unicode for nice icons https://unicode.org/emoji/charts/full-emoji-list.html
+            message["Subject"] = f"Belangrijk: Drempellevering en extra services bij uw bestelling {order_id} \U0001F69A"
         # encoded the message
         encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         create_message = {"raw": encoded_message}
@@ -1387,7 +1480,7 @@ def gmail_send_mail(
         return False
 
 
-def process_bol_orders(conn, product_type, zoek_string):
+def process_bol_orders(conn, product_type, zoek_string,plaats_van_label):
     message_treads_ids = get_messages(
         conn,
         f'to:*@vangilsweb.nl OR to:*@toopbv.nl subject:"Nieuwe bestelling:" {zoek_string}',
@@ -1407,10 +1500,12 @@ def process_bol_orders(conn, product_type, zoek_string):
         odin_order_nr = f"{order_nr}{winkel_short}"
         try:
             with engine.begin() as db_conn:
-                bol_email_addres = db_conn.exec_driver_sql(
-                    "SELECT shipmentdetails_email FROM orders_bol WHERE orderid LIKE %s", (odin_order_nr,)
-                ).first()[0]
-            send = gmail_send_mail(conn, odin_order_nr, to, bol_email_addres, product_type)
+                with engine.begin() as db_conn:
+                    stmt = text("SELECT shipmentdetails_email FROM orders_bol WHERE orderid = :orderid")
+                    bol_email_address = db_conn.execute(stmt, {"orderid": odin_order_nr}).scalar_one_or_none()
+                    if not bol_email_address:
+                        raise ValueError(f"shipment email not found for order {odin_order_nr}")
+            send = gmail_send_mail(conn, odin_order_nr, to, bol_email_address, plaats_van_label, product_type)
         except Exception as e:
             send = False
             logger.error(f"order_id not found {odin_order_nr} {e}")
@@ -1712,6 +1807,90 @@ def automatische_facturen_bol():
                 else:
                     logger.error(f"Failed to upload invoice for {factuur['orderid']}: {upload_response.text}")
 
+def process_new_orders_bol(connection, categorie, zoektermen, cat_needs_bezorg_afspraak, plaats_van_label_mapping, send_auto_info_mail):
+    for order in send_auto_info_mail:
+        subcat_match = (order.get("subcategory3") == categorie) or (order.get("subcategory4") == categorie)
+        # then check title for zoektermen
+        matched_zoekterm = next((zoekterm for zoekterm in zoektermen if zoekterm in order['order_title'].lower()), None)
+        # skip if no match
+        if not subcat_match or not matched_zoekterm:
+            continue
+        shops = {"alldayelektro": "vangilsweb", "toopbv": "toopbv", "tpshopper": "toopbv", "typischelektro": "toopbv"}
+        kvk = shops.get(order["winkel"].replace("_", ""))
+        aangepaste_levering = categorie in cat_needs_bezorg_afspraak
+        plaats_van_label = plaats_van_label_mapping.get(categorie, "")
+        send = gmail_send_mail(connection, order["orderid"], kvk, order["shipmentdetails_email"], plaats_van_label, matched_zoekterm, aangepaste_levering)
+        if send:
+            set_mailsend_db_bol(order["orderid"])
+
+def process_automail_categories(connection):
+    """Process automatic email categories based on automail_text configuration."""
+    # Single query to get all automail_text data we need
+    try:
+        with engine.connect() as db_conn:
+            automail_query = """
+                SELECT 
+                    category, 
+                    zoektermen, 
+                    bezorg_afspraak, 
+                    plaats_van_label 
+                FROM automail_text 
+                WHERE active = 1
+            """
+            automail_rows = db_conn.execute(text(automail_query)).mappings().all()
+    except SQLAlchemyError as e:
+        logger.error(f"Failed to fetch automail_text data: {e}")
+        return
+    
+    # Single query to get all orders that need processing - do this ONCE
+    try:
+        with engine.connect() as db_conn:
+            orders_query = """
+                SELECT
+                    O.orderid,
+                    winkel,
+                    order_ean,
+                    order_title,
+                    shipmentdetails_email,
+                    winkel_artikel,
+                    extra_info_mail_verzonden,
+                    BC.subcategory1,BC.subcategory2,BC.subcategory3,BC.subcategory4
+                FROM
+                    orders_bol O 
+                LEFT JOIN 
+                    orders_info_bol I 
+                ON
+                    O.orderid = I.orderid
+                LEFT JOIN 
+                    bol_category_info BC ON I.order_ean = BC.ean
+                WHERE
+                    O.active_order = True
+                    AND I.extra_info_mail_verzonden IS NULL
+                ORDER BY
+                    O.datetimeorderplaced DESC
+            """
+            send_auto_info_mail = db_conn.execute(text(orders_query)).mappings().all()
+    except SQLAlchemyError as e:
+        logger.error(f"Failed to fetch orders data: {e}")
+        return
+    
+    # Create all mappings from single query result
+    cat_needs_bezorg_afspraak = {row["category"] for row in automail_rows if row["bezorg_afspraak"] == 1}
+    plaats_van_label_mapping = {row["category"]: row["plaats_van_label"] for row in automail_rows}
+    
+    # Process each category with its search terms
+    for row in automail_rows:
+        category = row["category"]
+        # split on comma and normalise to lower-case strips
+        zoektermen = [term.strip().lower() for term in row["zoektermen"].split(",") if term.strip()]
+        if zoektermen:  # Only process if there are valid search terms
+            try:
+                process_new_orders_bol(connection, categorie=category, zoektermen=zoektermen, 
+                                   cat_needs_bezorg_afspraak=cat_needs_bezorg_afspraak,
+                                   plaats_van_label_mapping=plaats_van_label_mapping,
+                                   send_auto_info_mail=send_auto_info_mail)
+            except Exception as e:
+                logger.error(f"Failed to process category '{category}': {e}")
 
 if __name__ == "__main__":
     credentials = get_autorisation_gooogle_api()
@@ -1780,15 +1959,23 @@ if __name__ == "__main__":
         print(f"ERROR: Failed to process automatic Bol invoices: {e}")
 
     # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
-    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher -Philips")
-    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Waterreservoir")
-    process_bol_orders(connection, product_type="padhouder", zoek_string="padhouder")
-    process_bol_orders(connection, product_type="padhouder", zoek_string="Capsule houder")
-    process_bol_orders(connection, product_type="draaiplateau", zoek_string="Draaiplateau")
-    process_bol_orders(connection, product_type="deurbak", zoek_string="Deurbak")
-    process_bol_orders(connection, product_type="deurbak", zoek_string="Deurvak")
-    process_bol_orders(connection, product_type="groentelade", zoek_string="Groentelade")
-    process_bol_orders(connection, product_type="flessenrek", zoek_string="Flessenrek")
+    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher -Philips", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Waterreservoir", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="padhouder", zoek_string="padhouder", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="padhouder", zoek_string="Capsule houder", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="draaiplateau", zoek_string="Draaiplateau", plaats_van_label="achterkant of binnenkant")
+    process_bol_orders(connection, product_type="deurbak", zoek_string="Deurbak", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="deurbak", zoek_string="Deurvak", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="groentelade", zoek_string="Groentelade", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="flessenrek", zoek_string="Flessenrek", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="zetgroep", zoek_string="Zetgroep", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="Brouwunit", zoek_string="Brouwunit", plaats_van_label="onderkant")
+    process_bol_orders(connection, product_type="padhouder", zoek_string="Capsulehouder", plaats_van_label="onderkant")
+
+    try:
+        process_automail_categories(connection)
+    except Exception as e:
+        print(f"ERROR: Failed to process automatic email categories: {e}")
 
     process_if_replays_juiste_product(connection)
     klantvragen_bol(connection)
