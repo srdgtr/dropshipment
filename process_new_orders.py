@@ -15,13 +15,18 @@ from pathlib import Path
 from ftplib import FTP
 import time
 import httpx
-import lxml.etree as et
 from MySQLdb import OperationalError # pip install mysqlclient op windows
 from dataclasses import dataclass
 
 def install(package):
     subprocess.call([sys.executable, "-m", "pip", "install", package])
 
+try:
+    from lxml import etree
+except ModuleNotFoundError as e:
+    print(e, "trying to install")
+    install("lxml")
+    from lxml import etree
 
 try:
     from google.auth.transport.requests import Request
@@ -46,12 +51,7 @@ except ModuleNotFoundError as e:
     install("google-auth-oauthlib")
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-try:
-    from lxml import etree
-except ModuleNotFoundError as e:
-    print(e, "trying to install")
-    install("lxml")
-    from lxml import etree
+
 try:
     from sqlalchemy import MetaData, Table, and_, create_engine, select, text, update
 except ModuleNotFoundError as e:
@@ -101,27 +101,27 @@ aantal_dagen = "15d"
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.modify"]
 
 
-def get_autorisation_gooogle_api():
+def get_autorisation_gooogle_api(credentials_path, token_path):
     # not renewing need to run on desktop, and then copy token picle if not working.
     creds = None
     # The file token.pickle stores the user's access and refresh tokens, and is
     # created automatically when the authorization flow completes for the first
     # time.
-    if Path("token.pickle").is_file():
-        with open("token.pickle", "rb") as token:
+    if Path(token_path).is_file():
+        with open(token_path, "rb") as token:
             creds = pickle.load(token)
     # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials_gmail.json", SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
             authorization_url, state = flow.authorization_url(
-                access_type="offline", login_hint="toopbv@gmail.com", include_granted_scopes="true"
+                access_type="offline", include_granted_scopes="true"
             )
             creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
-        with open("token.pickle", "wb") as token:
+        with open(token_path, "wb") as token:
             pickle.dump(creds, token)
     return creds
 
@@ -130,7 +130,7 @@ def gmail_create_connection(login):
     return build("gmail", "v1", credentials=login)
 
 
-def set_order_info_db_bol(order_info, track_en_trace_url, track_en_trace_num):
+def set_order_info_db_bol(order_info, track_en_trace_url, track_en_trace_num, verkooporder_id_leverancier=None):
     orders_info_bol = Table("orders_info_bol", metadata, autoload_with=engine)
     logger.info(f"start stap 3 bol {order_info}")
     if order_info:
@@ -140,6 +140,14 @@ def set_order_info_db_bol(order_info, track_en_trace_url, track_en_trace_num):
         except TypeError:
             order_id = order_info[0]
             order_orderitemid = order_info[1]
+        values_dict = {
+            "dropship": "3",
+            "t_t_dropshipment": track_en_trace_url,
+            "order_id_leverancier": track_en_trace_num,
+        }
+        if verkooporder_id_leverancier is not None:
+            values_dict["verkooporder_id_leverancier"] = verkooporder_id_leverancier
+
         drop_send = (
             update(orders_info_bol)
             .where(
@@ -148,7 +156,7 @@ def set_order_info_db_bol(order_info, track_en_trace_url, track_en_trace_num):
                     orders_info_bol.columns.order_orderitemid == order_orderitemid,
                 )
             )
-            .values(dropship="3", t_t_dropshipment=track_en_trace_url, order_id_leverancier=track_en_trace_num)
+            .values(**values_dict)
         )
         with engine.begin() as conn:
             conn.execute(drop_send)
@@ -190,6 +198,7 @@ def set_replay_mailsend_db_bol(order_info):
         conn.execute(mail_send)
 
 def get_body_email(mess):
+    body = None
     try:
         body = base64.urlsafe_b64decode(mess["payload"]["body"]["data"].encode("UTF8"))
     except KeyError:
@@ -529,19 +538,19 @@ def mark_read(conn, message):
     conn.users().messages().modify(userId="me", id=message["id"], body={"removeLabelIds": ["INBOX"]}).execute()
 
 
-def add_label_processed_verzending(conn, message):
+def add_label_processed_verzending(conn, message, odin_verwerkt_label):
     conn.users().messages().modify(
-        userId="me", id=message["id"], body={"addLabelIds": ["Label_8612133870834283528"]}
+        userId="me", id=message["id"], body={"addLabelIds": [odin_verwerkt_label]}
     ).execute()
 
 
-def add_label_processed_return(conn, message):
+def add_label_processed_return(conn, message,verzending_label):
     conn.users().messages().modify(
-        userId="me", id=message["id"], body={"addLabelIds": ["Label_1372612835680541088"]}
+        userId="me", id=message["id"], body={"addLabelIds": [verzending_label]}
     ).execute()
 
 
-def process_bpost_messages(conn):
+def process_bpost_messages(conn, odin_verwerkt_label, verzending_label):
     # get send info exellent.
     message_treads_ids = get_messages(
         conn,
@@ -550,6 +559,12 @@ def process_bpost_messages(conn):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        if mail_body is None:
+            logger.error(f"stap 3 bpost mail body not found {message_treads_id['id']}")
+            conn.users().messages().modify(
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
+            ).execute()  # verwerkte mail
+            continue
         try:
             mail_info = {
                 "dienst": "bpost",
@@ -578,7 +593,7 @@ def process_bpost_messages(conn):
         except Exception as e:
             logger.error(f"stap 3 bpost error {e}")
             conn.users().messages().modify(
-                userId="me", id=message_treads_id["id"], body={"addLabelIds": ["Label_8612133870834283528"]}
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
             ).execute()  # verwerkte mail
             continue
         try:
@@ -588,7 +603,7 @@ def process_bpost_messages(conn):
                 get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         except Exception as e:
             logger.error(f"stap 3 bpost {mail_info} failed {e}")
     # delivered/afhaalpunt pakketten
@@ -597,10 +612,10 @@ def process_bpost_messages(conn):
     )
     for message_treads_id in message_treads_ids:
         mark_read(conn, message_treads_id)
-        add_label_processed_verzending(conn, message_treads_id)
+        add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
 
 
-def process_dhl_messages(conn):
+def process_dhl_messages(conn, odin_verwerkt_label, verzending_label):
     # get send info Lanckriet/Exellent nederland.
     message_treads_ids = get_messages(
         conn,
@@ -609,6 +624,12 @@ def process_dhl_messages(conn):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        if mail_body is None:
+            logger.error(f"stap 3 dhl mail body not found {message_treads_id['id']}")
+            conn.users().messages().modify(
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
+            ).execute()  # verwerkte mail
+            continue
         try:
             mail_info = {
                 "dienst": "dhl",
@@ -622,9 +643,9 @@ def process_dhl_messages(conn):
         except IndexError:
             logger.error("stap 3 dhl uitgevoerd voor een van de pakketten die voor ons zijn")
             conn.users().messages().modify(
-                userId="me", id=message_treads_id["id"], body={"addLabelIds": ["Label_8612133870834283528"]}
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
             ).execute()  # verwerkte mail
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
             continue
         try:  # addres not in mail (and postcode also missing in first), and needs javascript..
             link_info_encoded = mail_info["tt_url"].split("/")[-1].encode("ascii")
@@ -651,19 +672,19 @@ def process_dhl_messages(conn):
                     ]
                 mail_info["last_name_search"] = " ".join(filter(None, mail_info["last_name_search"]))
                 if "video van gils b.v." in mail_info["last_name_search"]:
-                    add_label_processed_verzending(conn, message_treads_id)
+                    add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
                     continue
                 try:
                     postal_code = dhl_info(mail_info)[0]
                 except TypeError:
                     conn.users().messages().modify(
-                        userId="me", id=message_treads_id["id"], body={"addLabelIds": ["Label_8612133870834283528"]}
+                        userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
                     ).execute()
                     continue
                 trace_nr = str(plain_url).split("?")[0].split("/")[-1]
             else:
                 if "pc=4823AB" in str(plain_url):
-                    add_label_processed_verzending(conn, message_treads_id)
+                    add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
                     logger.info(f"stap 3 dhl pakketje voor ons")
                     continue
                 else:
@@ -678,7 +699,7 @@ def process_dhl_messages(conn):
                             f"stap 3 dhl geen postcode {trace_nr}"
                         )  # geen betrouwbare manier om postcode te achterhalen voor zover ik kan zien
                         mark_read(conn, message_treads_id)
-                        add_label_processed_verzending(conn, message_treads_id)
+                        add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
                         continue
             dhl_api_info = httpx.get(
                 f"https://api-gw.dhlparcel.nl/track-trace?key={trace_nr}%2B{postal_code}"
@@ -704,17 +725,17 @@ def process_dhl_messages(conn):
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         except Exception as e:
             logger.error(f"stap 3 dhl {mail_info} failed {e}")
     # delivered/afhaalpunt pakketten
     message_treads_ids = get_messages(conn, 'from:(noreply@dhlparcel.nl) subject:("Je pakket")')
     for message_treads_id in message_treads_ids:
         mark_read(conn, message_treads_id)
-        add_label_processed_verzending(conn, message_treads_id)
+        add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
 
 
-def process_dynalogic_messages(conn):
+def process_dynalogic_messages(conn, odin_verwerkt_label, verzending_label):
     # get send info Exellent nederland.
     message_treads_ids = get_messages(
         conn, 'from:(noreply@dynalogic.eu) subject:("Wij komen eraan" OR "Afspraakbevestiging")'
@@ -722,6 +743,12 @@ def process_dynalogic_messages(conn):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        if mail_body is None:
+            logger.error(f"stap 3 dynalogic mail body not found {message_treads_id['id']}")
+            conn.users().messages().modify(
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
+            ).execute()  # verwerkte mail
+            continue
         try:
             mail_info = {
                 "dienst": "dynalogic",
@@ -738,7 +765,7 @@ def process_dynalogic_messages(conn):
         except IndexError:
             logger.error(f"stap 3 dynalogic failed, message id {message_treads_id}")
             conn.users().messages().modify(
-                userId="me", id=message_treads_id["id"], body={"addLabelIds": ["Label_8612133870834283528"]}
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
             ).execute()  # verwerkte mail
             continue
         try:
@@ -773,17 +800,23 @@ def process_dynalogic_messages(conn):
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         except Exception as e:
             logger.error(f"stap 3 dynalogic {mail_info} failed {e}")
 
 
-def process_transmision_messages(conn):
+def process_transmision_messages(conn, odin_verwerkt_label, verzending_label):
     # get send info Exellent nederland.
     message_treads_ids = get_messages(conn, 'from:(expeditie@schuurman.nl) subject:("Schuurman")')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        if mail_body is None:
+            logger.error(f"stap 3 transmission mail body not found {message_treads_id['id']}")
+            conn.users().messages().modify(
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
+            ).execute()  # verwerkte mail
+            continue
         if mail_body.xpath("//td[contains(text(),'0010264')]"):
             drop = True
         else:
@@ -797,13 +830,13 @@ def process_transmision_messages(conn):
             if "_" not in mail_info["order_num"] and "-" not in mail_info["order_num"] and not drop:
                 logger.info(f"stap 3 transmission no order_nr bol/blokker, message id {message_treads_id}")
                 conn.users().messages().modify(
-                    userId="me", id=message_treads_id["id"], body={"addLabelIds": ["Label_8612133870834283528"]}
+                    userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
                 ).execute()
                 continue
         except IndexError:
             logger.info(f"stap 3 transmission failed, message id {message_treads_id}")
             conn.users().messages().modify(
-                userId="me", id=message_treads_id["id"], body={"addLabelIds": ["Label_8612133870834283528"]}
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
             ).execute()  # verwerkte mail
             continue
         try:
@@ -838,17 +871,23 @@ def process_transmision_messages(conn):
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         except Exception as e:
             logger.error(f"stap 3 transmission {mail_info} failed {e}")
 
 
-def process_gls_messages(conn):
+def process_gls_messages(conn, odin_verwerkt_label, verzending_label):
     # get send info Amacom.
     message_treads_ids = get_messages(conn, 'from:(*@gls-netherlands.com) subject:"jouw pakket van GLS!"')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        if mail_body is None:
+            logger.error(f"stap 3 gls mail body not found {message_treads_id['id']}")
+            conn.users().messages().modify(
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
+            ).execute()  # verwerkte mail
+            continue
         mail_info = {
             "dienst": "gls",
             "tt_url": mail_body.xpath("//a[contains(@href,'tracking')]/@href")[0],
@@ -857,7 +896,7 @@ def process_gls_messages(conn):
             mail_info["tt_num"] = mail_info["tt_url"].split("=")[1].split("&")[0]
             if not mail_body.xpath("//td/table[contains(@bgcolor,'#F3F3F3')]//tr[7]/td//text()"):
                 logger.info(f"gls bestelling voor ons zelf {mail_info}")
-                add_label_processed_verzending(conn, message_treads_id)
+                add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
                 continue
             _, mail_info["last_name"], mail_info["first_name"] = [
                 x.strip(",")
@@ -883,22 +922,28 @@ def process_gls_messages(conn):
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         except Exception as e:
             logger.error(f"stap 3 gls {mail_info} failed {e}")
 
     message_treads_ids = get_messages(conn, 'from:(*@gls-netherlands.com) subject:"Informatie over uw zending via GLS"')
     for message_treads_id in message_treads_ids:
         mark_read(conn, message_treads_id)
-        add_label_processed_verzending(conn, message_treads_id)
+        add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
 
 
-def process_dpd_messages(conn):
+def process_dpd_messages(conn, odin_verwerkt_label, verzending_label):
     # get send info difox
     message_treads_ids = get_messages(conn, 'from:(*@difox.com) subject:"Verzend informatie"')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        if mail_body is None:
+            logger.error(f"stap 3 dpd mail body not found {message_treads_id['id']}")
+            conn.users().messages().modify(
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
+            ).execute()  # verwerkte mail
+            continue
         try:
             mail_info = {
                 "dienst": "dpd",
@@ -910,7 +955,7 @@ def process_dpd_messages(conn):
             }
         except (IndexError, ValueError) as e:
             logger.info(f"stap 3 dpd failed because of no tt_link, message id {message_treads_id} {e}")
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
             continue
         try:
             *_, mail_info["order_num"], _ = [
@@ -976,12 +1021,12 @@ def process_dpd_messages(conn):
             except (IndexError, ValueError) as e:
                 logger.info(f"amazon ? {e}")
                 mark_read(conn, message_treads_id)
-                add_label_processed_verzending(conn, message_treads_id)
+                add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
                 continue
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         except Exception as e:
             logger.error(f"stap 3 dpd {mail_info} failed {e}")
 
@@ -990,6 +1035,12 @@ def process_dpd_messages(conn):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        if mail_body is None:
+            logger.error(f"stap 3 dpd mail body not found {message_treads_id['id']}")
+            conn.users().messages().modify(
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
+            ).execute()  # verwerkte mail
+            continue
         # print(etree.tostring(mail_body, pretty_print=True, encoding='unicode'))
         try:
             mail_info = {
@@ -1007,7 +1058,7 @@ def process_dpd_messages(conn):
                 f"stap 3 dpd failed because of no tt_link(zoals in bezorgd links), message id {message_treads_id} {e}"
             )
             mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
             continue
         try:
             mail_info["first_name"], *mail_info["last_name"] = mail_info["full_name"].lower().split(" ", 1)
@@ -1019,7 +1070,7 @@ def process_dpd_messages(conn):
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         except Exception as e:
             logger.error(f"stap 3 dpd {mail_info} failed {e}")
     # get send info excellent, so different in be that i need to do it separate
@@ -1028,6 +1079,12 @@ def process_dpd_messages(conn):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        if mail_body is None:
+            logger.error(f"stap 3 dpd mail body not found {message_treads_id['id']}")
+            conn.users().messages().modify(
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
+            ).execute()  # verwerkte mail
+            continue
         # print(etree.tostring(mail_body, pretty_print=True, encoding='unicode'))
         try:
             mail_info = {
@@ -1045,7 +1102,7 @@ def process_dpd_messages(conn):
                 f"stap 3 dpd failed because of no tt_link(zoals in bezorgd links), message id {message_treads_id} {e}"
             )
             mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
             continue
         try:
             mail_info["first_name"], *mail_info["last_name"] = mail_info["full_name"].lower().split(" ", 1)
@@ -1057,16 +1114,22 @@ def process_dpd_messages(conn):
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         except Exception as e:
             logger.error(f"stap 3 dpd {mail_info} failed {e}")
 
-def process_postnl_ur_messages(conn):
+def process_postnl_ur_messages(conn, odin_verwerkt_label, verzending_label):
     # get send info united retail.
     message_treads_ids = get_messages(conn, 'from: info@vangilsweb.nl subject:("Uw bestelling is verzonden")')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         mail_body = get_body_email(message)
+        if mail_body is None:
+            logger.error(f"stap 3 united mail body not found {message_treads_id['id']}")
+            conn.users().messages().modify(
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
+            ).execute()  # verwerkte mail
+            continue
         mail_info = {
             "dienst": "united",
             "tt_url": mail_body.xpath("//*[contains(text(),'Volg mijn ')]/../a/@href")[0],
@@ -1103,7 +1166,7 @@ def process_postnl_ur_messages(conn):
             get_order_info_db = get_set_info_database(mail_info)
             if get_order_info_db:
                 mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         except Exception as e:
             logger.error(f"stap 3 united {mail_info} failed {e}")
     message_treads_ids = get_messages(
@@ -1112,9 +1175,9 @@ def process_postnl_ur_messages(conn):
     )
     for message_treads_id in message_treads_ids:
         mark_read(conn, message_treads_id)
-        add_label_processed_verzending(conn, message_treads_id)
+        add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
 
-def process_eltric_messages(conn):
+def process_eltric_messages(conn, odin_verwerkt_label, verzending_label):
     message_treads_ids = get_messages(conn, 'from: info@eltric.com subject:("Versand E-Mail - eltric GmbH")')
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
@@ -1123,7 +1186,7 @@ def process_eltric_messages(conn):
         if mail_body is not None and mail_body.xpath("//*[contains(text(),'4823AB Breda')]"):
             logger.info(f"pakket voor ons zelf")
             mark_read(conn, message_treads_id)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
         elif mail_body is not None:
             mail_info = {
                 "dienst": "electric",
@@ -1140,14 +1203,14 @@ def process_eltric_messages(conn):
                 get_order_info_db = get_set_info_database(mail_info)
                 if get_order_info_db:
                     mark_read(conn, message_treads_id)
-                add_label_processed_verzending(conn, message_treads_id)
+                add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
             except Exception as e:
                 logger.error(f"stap 3 eltric {mail_info} failed {e}")
         else:
             logger.error(f"Mail body is None for message id {message_treads_id}")
 
 
-def process_beekman_messages(conn):
+def process_beekman_messages(conn, odin_verwerkt_label, verzending_label):
     query = """
         SELECT 
             I.orderid,
@@ -1197,7 +1260,7 @@ def process_beekman_messages(conn):
     message_treads_ids = get_messages(conn, 'from:(*@beekman.nl) "Verzend bevestiging"')
     for message_treads_id in message_treads_ids:
         mark_read(conn, message_treads_id)
-        add_label_processed_verzending(conn, message_treads_id)
+        add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
 
 def process_visynet_api():
     # get still open orders and check if they have a track and trace
@@ -1262,25 +1325,27 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
             file_lines = []
             ftp.retrlines(f"RETR {file}", file_lines.append)
             xml_content = "\n".join(file_lines)
-            parse_xml = et.fromstring(xml_content)
+            parse_xml = etree.fromstring(xml_content)
             if parse_xml.find(".//carrier_id").text == "DPD":
-                logger.info(f"transporteur {parse_xml.find('.//carrier_id').text}")
+                logger.info(f"transporteur {parse_xml.find('.//carrier_id').text} voor exl")
                 order_id = parse_xml.find(".//OrderExternalId_01").text
                 tt_number = parse_xml.find(".//trackingnumber").text
                 track_en_trace_url = parse_xml.find(".//trackingurl").text
+                service_number_exl = parse_xml.find(".//service_level").text
                 if not track_en_trace_url:
                     track_en_trace_url = f"https://www.dpdgroup.com/be/mydpd/my-parcels/search?lang=nl&parcelNumber={tt_number }"
             else:
-                logger.info(f"transporteur {parse_xml.find('.//carrier_id').text}")
+                logger.info(f"transporteur {parse_xml.find('.//carrier_id').text} voor exl")
                 order_id = parse_xml.find(".//OrderExternalId_01").text
-                tt_number = parse_xml.find(".//trackingnumber").text
+                tt_number = parse_xml.find(".//trackingurl").text.split("=")[-1]
                 track_en_trace_url = parse_xml.find(".//trackingurl").text
+                service_number_exl = None
             if order_id: 
                 if "_" in order_id:
                     info_bol_db = f"SELECT orderid,order_orderitemid FROM orders_info_bol WHERE orderid = '{order_id}'"
                     with engine.connect() as connection:
                         order_info = connection.exec_driver_sql(info_bol_db).first()
-                    set_order_info_db_bol(order_info, track_en_trace_url, tt_number)
+                    set_order_info_db_bol(order_info, track_en_trace_url, tt_number, service_number_exl)
                     logger.info(f"{order_info} order bol tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")  
                 elif "-" in order_id:
                     info_blok_db = f"SELECT I.order_line_id FROM blokker_orders O LEFT JOIN blokker_order_items I ON O.commercialid = I.commercialid WHERE order_id = '{order_id}'"
@@ -1480,7 +1545,7 @@ def gmail_send_mail(
         return False
 
 
-def process_bol_orders(conn, product_type, zoek_string,plaats_van_label):
+def process_bol_orders(conn, product_type, zoek_string, plaats_van_label, verzending_label):
     message_treads_ids = get_messages(
         conn,
         f'to:*@vangilsweb.nl OR to:*@toopbv.nl subject:"Nieuwe bestelling:" {zoek_string}',
@@ -1489,12 +1554,18 @@ def process_bol_orders(conn, product_type, zoek_string,plaats_van_label):
     for message_treads_id in message_treads_ids:
         message = conn.users().messages().get(userId="me", id=message_treads_id["id"]).execute()
         headers = message["payload"]["headers"]
-        order_nr = re.search(r"bestelnummer:\s*([A-Za-z0-9-]+)", [i["value"] for i in headers if i["name"] == "Subject"][0]).group(1).replace("-","")
+        bestel_nr = re.search(r"bestelnummer:\s*([A-Za-z0-9-]+)", [i["value"] for i in headers if i["name"] == "Subject"][0])
+        if not bestel_nr:
+            logger.error(f"orderid not found in email header {message_treads_id['id']}")
+            continue
+        order_nr = bestel_nr.group(1).replace("-","")
 
         try:
-            _, webwinkel, to, _ = re.split("[@ .]", [i["value"] for i in headers if i["name"] == "To"][0])
-        except ValueError as e:
-            webwinkel, to, _ = re.split("[@ .]", [i["value"] for i in headers if i["name"] == "To"][0])
+            addr = next(i["value"] for i in headers if i["name"] == "To")
+            webwinkel, to = re.sub(r'\d+$', '', addr.split('@', 1)[0].split('.')[-1]), addr.split('@', 1)[1].split('.')[0]
+        except Exception:
+            webwinkel = ""
+            to = ""
         winkel = {"alldayelektro": "_ADE", "info": "_TB", "tpshopper": "_TS", "typischelektro": "_TE"}
         winkel_short = winkel.get(webwinkel)
         odin_order_nr = f"{order_nr}{winkel_short}"
@@ -1510,10 +1581,10 @@ def process_bol_orders(conn, product_type, zoek_string,plaats_van_label):
             send = False
             logger.error(f"order_id not found {odin_order_nr} {e}")
         if send:
-            add_label_processed_return(conn, message_treads_id)
+            add_label_processed_return(conn, message_treads_id, verzending_label)
             set_mailsend_db_bol(odin_order_nr)
 
-def process_if_replays_juiste_product(conn):
+def process_if_replays_juiste_product(conn, odin_verwerkt_label, verzending_label):
     message_treads_ids = get_messages(
         conn,
         f'to:*@vangilsweb.nl OR to:*@toopbv.nl OR to:toopbv@gmail.com subject:"Juiste"',
@@ -1526,9 +1597,9 @@ def process_if_replays_juiste_product(conn):
         if match:  # Check if a match was found
             order_nr = match.group(1)
             set_replay_mailsend_db_bol(order_nr)
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
 
-def klantvragen_bol(conn):
+def klantvragen_bol(conn, odin_verwerkt_label, verzending_label):
     message_treads_ids = get_messages(
             conn,
             f'to:*@vangilsweb.nl OR to:*@toopbv.nl subject:"klantvraag in je verkoopaccount"',
@@ -1539,11 +1610,16 @@ def klantvragen_bol(conn):
         headers = message["payload"]["headers"]
         try:
             # print(next((header["value"] for header in message["payload"]["headers"] if header["name"] == "Subject"), "Subject header not found."))
-            order_nr = re.search(r"bestelnummer \s*([A-Za-z0-9-]+)", [i["value"] for i in headers if i["name"] == "Subject"][0]).group(1).replace("-","")
+            subject = re.search(r"bestelnummer \s*([A-Za-z0-9-]+)", [i["value"] for i in headers if i["name"] == "Subject"][0])
+            if not subject:
+                raise ValueError("Order number not found in subject")
+            order_nr = subject.group(1).replace("-","")
             mail_body = get_body_email(message)
+            if mail_body is None:
+                raise ValueError("Mail body is None")
             klantvragen_url = mail_body.xpath("//*[contains(text(),'Klantvraag')]/../a/@href")[0]
         except (ValueError, AttributeError) as e:
-            add_label_processed_verzending(conn, message_treads_id)
+            add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
             mark_read(conn, message_treads_id)
             logger.error(f"orderid not found in email header {e}")
             continue
@@ -1559,7 +1635,7 @@ def klantvragen_bol(conn):
                 with engine.begin() as db_conn:
                     sql = text("UPDATE orders_bol SET klantvragen = :klantvragen, klantvragen_url =:klantvragen_url  WHERE orderid = :orderid")
                     db_conn.execute(sql, {"klantvragen": True, "klantvragen_url":klantvragen_url, "orderid": odin_order_nr})
-                    add_label_processed_verzending(conn, message_treads_id)
+                    add_label_processed_verzending(conn, message_treads_id, odin_verwerkt_label)
                     mark_read(conn, message_treads_id)
             except Exception as e:
                 logger.error(f"orderid not found {odin_order_nr} {e}")
@@ -1807,7 +1883,7 @@ def automatische_facturen_bol():
                 else:
                     logger.error(f"Failed to upload invoice for {factuur['orderid']}: {upload_response.text}")
 
-def process_new_orders_bol(connection, categorie, zoektermen, cat_needs_bezorg_afspraak, plaats_van_label_mapping, send_auto_info_mail):
+def process_new_orders_bol(connection, categorie, zoektermen, cat_needs_bezorg_afspraak, plaats_van_label_mapping, send_auto_info_mail, verzending_label):
     for order in send_auto_info_mail:
         subcat_match = (order.get("subcategory3") == categorie) or (order.get("subcategory4") == categorie)
         # then check title for zoektermen
@@ -1821,9 +1897,13 @@ def process_new_orders_bol(connection, categorie, zoektermen, cat_needs_bezorg_a
         plaats_van_label = plaats_van_label_mapping.get(categorie, "")
         send = gmail_send_mail(connection, order["orderid"], kvk, order["shipmentdetails_email"], plaats_van_label, matched_zoekterm, aangepaste_levering)
         if send:
+            # This part is tricky because message_treads_id is not available here.
+            # The logic needs to be refactored to associate the order with the message that triggered it.
+            # For now, I'm assuming we can't label it here. The original code had this issue as well.
+            # add_label_processed_return(conn, message_treads_id, verzending_label)
             set_mailsend_db_bol(order["orderid"])
 
-def process_automail_categories(connection):
+def process_automail_categories(connection, verzending_label):
     """Process automatic email categories based on automail_text configuration."""
     # Single query to get all automail_text data we need
     try:
@@ -1888,55 +1968,94 @@ def process_automail_categories(connection):
                 process_new_orders_bol(connection, categorie=category, zoektermen=zoektermen, 
                                    cat_needs_bezorg_afspraak=cat_needs_bezorg_afspraak,
                                    plaats_van_label_mapping=plaats_van_label_mapping,
-                                   send_auto_info_mail=send_auto_info_mail)
+                                   send_auto_info_mail=send_auto_info_mail,
+                                   verzending_label=verzending_label)
             except Exception as e:
                 logger.error(f"Failed to process category '{category}': {e}")
 
 if __name__ == "__main__":
-    credentials = get_autorisation_gooogle_api()
-    connection = gmail_create_connection(credentials)
-    try:
-        process_beekman_messages(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process Beekman messages: {e}")
+    gmail_accounts = [
+        {"credentials": "credentials_gmail.json", "token": "token.pickle", "odin_verwerkt": "Label_8612133870834283528","verzending_label": "Label_1372612835680541088"},
+        {"credentials": "credentials_gmail_zakelijk.json", "token": "token_zakelijk.pickle", "odin_verwerkt": "Label_3080760246089645102","verzending_label": "Label_2554151306297345319"},
+    ]
 
-    try:
-        process_bpost_messages(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process Bpost messages: {e}")
-    try:
-        process_dhl_messages(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process DHL messages: {e}")
+    for account in gmail_accounts:
+        try:
+            credentials = get_autorisation_gooogle_api(account["credentials"], account["token"])
+            connection = gmail_create_connection(credentials)
+            odin_verwerkt_label = account["odin_verwerkt"]
+            verzending_label = account["verzending_label"]
+            logger.info(f"Processing account: {account['credentials']}")
 
-    try:
-        process_dynalogic_messages(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process Dynalogic messages: {e}")
+            try:
+                process_beekman_messages(connection, odin_verwerkt_label,verzending_label)
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process Beekman messages: {e}")
 
-    try:
-        process_transmision_messages(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process Transmision messages: {e}")
+            try:
+                process_bpost_messages(connection, odin_verwerkt_label, verzending_label)
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process Bpost messages: {e}")
+            try:
+                process_dhl_messages(connection, odin_verwerkt_label, verzending_label )
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process DHL messages: {e}")
 
-    try:
-        process_gls_messages(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process GLS messages: {e}")
+            try:
+                process_dynalogic_messages(connection, odin_verwerkt_label, verzending_label)
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process Dynalogic messages: {e}")
 
-    try:
-        process_dpd_messages(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process DPD messages: {e}")
+            try:
+                process_transmision_messages(connection, odin_verwerkt_label, verzending_label)
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process Transmision messages: {e}")
 
-    try:
-        process_postnl_ur_messages(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process PostNL UR messages: {e}")
-    try:
-        process_eltric_messages(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process electric messages: {e}")       
+            try:
+                process_gls_messages(connection, odin_verwerkt_label, verzending_label)
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process GLS messages: {e}")
+
+            try:
+                process_dpd_messages(connection, odin_verwerkt_label, verzending_label)
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process DPD messages: {e}")
+
+            try:
+                process_postnl_ur_messages(connection, odin_verwerkt_label, verzending_label)
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process PostNL UR messages: {e}")
+            try:
+                process_eltric_messages(connection, odin_verwerkt_label, verzending_label)
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process electric messages: {e}")
+            
+            # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
+            process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher -Philips", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="waterreservoir", zoek_string="Waterreservoir", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="padhouder", zoek_string="padhouder", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="padhouder", zoek_string="Capsule houder", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="draaiplateau", zoek_string="Draaiplateau", plaats_van_label="achterkant of binnenkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="deurbak", zoek_string="Deurbak", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="deurbak", zoek_string="Deurvak", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="groentelade", zoek_string="Groentelade", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="flessenrek", zoek_string="Flessenrek", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="zetgroep", zoek_string="Zetgroep", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="Brouwunit", zoek_string="Brouwunit", plaats_van_label="onderkant", verzending_label=verzending_label)
+            process_bol_orders(connection, product_type="padhouder", zoek_string="Capsulehouder", plaats_van_label="onderkant", verzending_label=verzending_label)
+
+            try:
+                process_automail_categories(connection, verzending_label)
+            except Exception as e:
+                logger.error(f"ERROR: Failed to process automatic email categories: {e}")
+
+            process_if_replays_juiste_product(connection, odin_verwerkt_label, verzending_label)
+            klantvragen_bol(connection, odin_verwerkt_label , verzending_label)
+
+        except Exception as e:
+            logger.error(f"FATAL: Failed to process account {account['credentials']}: {e}")
+
+    # These functions are not dependent on the Gmail connection and run once
     try:
         process_ftp_files_tt_exl(
             config["excellent dropship tt"]["server"],
@@ -1944,38 +2063,16 @@ if __name__ == "__main__":
             config["excellent dropship tt"]["wachtwoord"],
         )
     except Exception as e:
-        print(f"ERROR: Failed to process FTP files: {e}")
+        logger.error(f"ERROR: Failed to process FTP files: {e}")
     try:
         process_visynet_api()
     except Exception as e:
-        print(f"ERROR: Failed to process Visynet API: {e}")
+        logger.error(f"ERROR: Failed to process Visynet API: {e}")
     try:
         verkrijgen_shipmentids_bol()
     except Exception as e:
-        print(f"ERROR: Failed to obtain Bol shipment IDs: {e}")
+        logger.error(f"ERROR: Failed to obtain Bol shipment IDs: {e}")
     try:
         automatische_facturen_bol()
     except Exception as e:
-        print(f"ERROR: Failed to process automatic Bol invoices: {e}")
-
-    # auto replay on bol, sommige bol mailtje automatisch beantwoorden, om het aantal retouren te verminderen
-    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Reservoir -karcher -Philips", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="waterreservoir", zoek_string="Waterreservoir", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="padhouder", zoek_string="padhouder", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="padhouder", zoek_string="Capsule houder", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="draaiplateau", zoek_string="Draaiplateau", plaats_van_label="achterkant of binnenkant")
-    process_bol_orders(connection, product_type="deurbak", zoek_string="Deurbak", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="deurbak", zoek_string="Deurvak", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="groentelade", zoek_string="Groentelade", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="flessenrek", zoek_string="Flessenrek", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="zetgroep", zoek_string="Zetgroep", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="Brouwunit", zoek_string="Brouwunit", plaats_van_label="onderkant")
-    process_bol_orders(connection, product_type="padhouder", zoek_string="Capsulehouder", plaats_van_label="onderkant")
-
-    try:
-        process_automail_categories(connection)
-    except Exception as e:
-        print(f"ERROR: Failed to process automatic email categories: {e}")
-
-    process_if_replays_juiste_product(connection)
-    klantvragen_bol(connection)
+        logger.error(f"ERROR: Failed to process automatic Bol invoices: {e}")
