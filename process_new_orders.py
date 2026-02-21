@@ -129,7 +129,6 @@ def get_autorisation_gooogle_api(credentials_path, token_path):
 def gmail_create_connection(login):
     return build("gmail", "v1", credentials=login)
 
-
 def set_order_info_db_bol(order_info, track_en_trace_url, track_en_trace_num, verkooporder_id_leverancier=None):
     orders_info_bol = Table("orders_info_bol", metadata, autoload_with=engine)
     logger.info(f"start stap 3 bol {order_info}")
@@ -968,7 +967,7 @@ def process_dpd_messages(conn, odin_verwerkt_label, verzending_label):
         except (IndexError, ValueError) as e:
             logger.info(f"stap 3 dpd failed because of local delivery to us, message id {message_treads_id} {e}")
             conn.users().messages().modify(
-                userId="me", id=message_treads_id["id"], body={"addLabelIds": ["Label_8612133870834283528"]}
+                userId="me", id=message_treads_id["id"], body={"addLabelIds": [odin_verwerkt_label]}
             ).execute()  # verwerkte mail
             continue
         try:
@@ -1319,46 +1318,56 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
         ftp.login(login, passwd=wachtwoord)
 
         file_names = ftp.nlst()
-        tt_files = [line for line in file_names if "xml" in line]
+        tt_files = [line for line in file_names if "xml" in line and ".old_dpd" not in line]
 
         for file in tt_files:
-            file_lines = []
-            ftp.retrlines(f"RETR {file}", file_lines.append)
-            xml_content = "\n".join(file_lines)
-            parse_xml = etree.fromstring(xml_content)
-            if parse_xml.find(".//carrier_id").text == "DPD":
-                logger.info(f"transporteur {parse_xml.find('.//carrier_id').text} voor exl")
-                order_id = parse_xml.find(".//OrderExternalId_01").text
-                tt_number = parse_xml.find(".//trackingnumber").text
-                track_en_trace_url = parse_xml.find(".//trackingurl").text
-                service_number_exl = parse_xml.find(".//service_level").text
-                if not track_en_trace_url:
-                    track_en_trace_url = f"https://www.dpdgroup.com/be/mydpd/my-parcels/search?lang=nl&parcelNumber={tt_number }"
-            else:
-                logger.info(f"transporteur {parse_xml.find('.//carrier_id').text} voor exl")
-                order_id = parse_xml.find(".//OrderExternalId_01").text
-                tt_number = parse_xml.find(".//trackingurl").text.split("=")[-1]
-                track_en_trace_url = parse_xml.find(".//trackingurl").text
-                service_number_exl = None
-            if order_id: 
-                if "_" in order_id:
-                    info_bol_db = f"SELECT orderid,order_orderitemid FROM orders_info_bol WHERE orderid = '{order_id}'"
-                    with engine.connect() as connection:
-                        order_info = connection.exec_driver_sql(info_bol_db).first()
-                    set_order_info_db_bol(order_info, track_en_trace_url, tt_number, service_number_exl)
-                    logger.info(f"{order_info} order bol tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")  
-                elif "-" in order_id:
-                    info_blok_db = f"SELECT I.order_line_id FROM blokker_orders O LEFT JOIN blokker_order_items I ON O.commercialid = I.commercialid WHERE order_id = '{order_id}'"
-                    with engine.connect() as connection:
-                        order_line_id = connection.exec_driver_sql(info_blok_db).first()
-                    set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
-                    logger.info(f"{order_info} order blokker tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")
-                ftp.delete(file)
-                # pass
-            else:
-                if parse_xml.find(".//customer_line_id").text == "Manually Inserted":
+            try:
+                file_lines = []
+                ftp.retrlines(f"RETR {file}", file_lines.append)
+                xml_content = "\n".join(file_lines)
+                parse_xml = etree.fromstring(xml_content)
+                if parse_xml.find(".//carrier_id").text == "DPD":
+                    logger.info(f"transporteur {parse_xml.find('.//carrier_id').text} voor exl")
+                    order_id = parse_xml.find(".//OrderExternalId_01").text
+                    tt_number = parse_xml.find(".//trackingnumber").text
+                    track_en_trace_url = parse_xml.find(".//trackingurl").text
+                    service_number_exl = parse_xml.find(".//service_level").text
+                    if not track_en_trace_url:
+                        track_en_trace_url = f"https://www.dpdgroup.com/be/mydpd/my-parcels/search?lang=nl&parcelNumber={tt_number }"
+                    ftp.rename(file, f"{file}.old_dpd")
+                else:
+                    logger.info(f"transporteur {parse_xml.find('.//carrier_id').text} voor exl")
+                    order_id = parse_xml.find(".//OrderExternalId_01").text
+                    tt_number = parse_xml.find(".//trackingurl").text.split("=")[-1]
+                    track_en_trace_url = parse_xml.find(".//trackingurl").text
+                    service_number_exl = None
+                if order_id:
+                    if "_" in order_id:
+                        info_bol_db = f"SELECT orderid,order_orderitemid FROM orders_info_bol WHERE orderid = '{order_id}'"
+                        with engine.connect() as connection:
+                            order_info = connection.exec_driver_sql(info_bol_db).first()
+                        set_order_info_db_bol(order_info, track_en_trace_url, tt_number, service_number_exl)
+                        logger.info(f"{order_info} order bol tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")  
+                    elif "-" in order_id:
+                        info_blok_db = f"SELECT I.order_line_id FROM blokker_orders O LEFT JOIN blokker_order_items I ON O.commercialid = I.commercialid WHERE order_id = '{order_id}'"
+                        with engine.connect() as connection:
+                            order_line_id = connection.exec_driver_sql(info_blok_db).first()
+                        set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
+                        logger.info(f"{order_info} order blokker tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")
                     ftp.delete(file)
                     # pass
+                else:
+                    customer_line_id = parse_xml.find(".//customer_line_id")
+                    if customer_line_id is not None and customer_line_id.text == "Manually Inserted":
+                        ftp.delete(file)
+                    else:
+                        logger.error(f"order id and customer_line_id not found in exl tt ftp file {file}")
+                        ftp.rename(file, f"{file}.old_dpd")
+                        # pass
+            except Exception as e:
+                logger.error(f"process exl tt ftp file {file} failed {e}")
+                ftp.rename(file, f"{file}.old_dpd")
+                continue
 
 
 def gmail_send_mail(
@@ -1531,7 +1540,7 @@ def gmail_send_mail(
                 f"<html><body>{standaard_begin_text_aangepaste_levering}{info['type_device']}{standaard_eind_text}</body></html>",
                 subtype="html",
             )
-            message["Subject"] = f"Belangrijk: Drempellevering en extra services bij uw bestelling {order_id} \U0001F69A"
+            message["Subject"] = f"Verzendinformatie Bol bestelling: {order_id} Drempel levering \U0001F69A"
         # encoded the message
         encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         create_message = {"raw": encoded_message}
@@ -1975,8 +1984,8 @@ def process_automail_categories(connection, verzending_label):
 
 if __name__ == "__main__":
     gmail_accounts = [
-        {"credentials": "credentials_gmail.json", "token": "token.pickle", "odin_verwerkt": "Label_8612133870834283528","verzending_label": "Label_1372612835680541088"},
         {"credentials": "credentials_gmail_zakelijk.json", "token": "token_zakelijk.pickle", "odin_verwerkt": "Label_3080760246089645102","verzending_label": "Label_2554151306297345319"},
+        {"credentials": "credentials_gmail.json", "token": "token.pickle", "odin_verwerkt": "Label_8612133870834283528","verzending_label": "Label_1372612835680541088"},
     ]
 
     for account in gmail_accounts:
