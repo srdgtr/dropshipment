@@ -1326,42 +1326,53 @@ def process_ftp_files_tt_exl(server, login, wachtwoord):
                 ftp.retrlines(f"RETR {file}", file_lines.append)
                 xml_content = "\n".join(file_lines)
                 parse_xml = etree.fromstring(xml_content)
-                if parse_xml.find(".//carrier_id").text == "DPD":
-                    logger.info(f"transporteur {parse_xml.find('.//carrier_id').text} voor exl")
-                    order_id = parse_xml.find(".//OrderExternalId_01").text
-                    tt_number = parse_xml.find(".//trackingnumber").text
-                    track_en_trace_url = parse_xml.find(".//trackingurl").text
-                    service_number_exl = parse_xml.find(".//service_level").text
-                    if not track_en_trace_url:
-                        track_en_trace_url = f"https://www.dpdgroup.com/be/mydpd/my-parcels/search?lang=nl&parcelNumber={tt_number }"
-                    ftp.rename(file, f"{file}.old_dpd")
+                carrier_id = (parse_xml.findtext(".//carrier_id") or "").strip()
+                order_id = (parse_xml.findtext(".//customer_reference") or "").strip()
+                logger.info(f"transporteur {carrier_id or 'onbekend'} voor exl, ftp file {file}")
+
+                if carrier_id == "DPD":
+                    tt_number = (parse_xml.findtext(".//trackingnumber") or "").strip()
+                    track_en_trace_url = f"https://www.dpdgroup.com/be/mydpd/my-parcels/search?lang=nl&parcelNumber={tt_number}"
+                    service_number_exl = (parse_xml.findtext(".//service_level") or "").strip() or None
                 else:
-                    logger.info(f"transporteur {parse_xml.find('.//carrier_id').text} voor exl")
-                    order_id = parse_xml.find(".//OrderExternalId_01").text
-                    tt_number = parse_xml.find(".//trackingurl").text.split("=")[-1]
-                    track_en_trace_url = parse_xml.find(".//trackingurl").text
+                    tracking_url = (parse_xml.findtext(".//trackingurl") or "").strip()
+                    tt_number = tracking_url.split("=")[-1] if tracking_url else ""
+                    track_en_trace_url = tracking_url
                     service_number_exl = None
+
                 if order_id:
-                    if "_" in order_id:
-                        info_bol_db = f"SELECT orderid,order_orderitemid FROM orders_info_bol WHERE orderid = '{order_id}'"
-                        with engine.connect() as connection:
-                            order_info = connection.exec_driver_sql(info_bol_db).first()
-                        set_order_info_db_bol(order_info, track_en_trace_url, tt_number, service_number_exl)
-                        logger.info(f"{order_info} order bol tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")  
-                    elif "-" in order_id:
-                        info_blok_db = f"SELECT I.order_line_id FROM blokker_orders O LEFT JOIN blokker_order_items I ON O.commercialid = I.commercialid WHERE order_id = '{order_id}'"
-                        with engine.connect() as connection:
-                            order_line_id = connection.exec_driver_sql(info_blok_db).first()
-                        set_order_info_db_blokker(order_line_id, track_en_trace_url, tt_number)
-                        logger.info(f"{order_info} order blokker tt {tt_number}, {track_en_trace_url} exellent toegevoegd ")
+                    kale_order_id = re.sub(r"_?(?:TS|TB|ADE).*$", "", order_id)
+                    info_bol_db = text(
+                        "SELECT orderid,order_orderitemid FROM orders_info_bol WHERE orderid LIKE :orderid"
+                    )
+                    with engine.connect() as connection:
+                        order_info = connection.execute(info_bol_db, {"orderid": f"{kale_order_id}%"}).first()
+
+                    if not order_info:
+                        logger.error(
+                            f"Geen order match in DB voor exl ftp file {file}, order_id {order_id}, kale_order_id {kale_order_id}, tt {tt_number}. Bestand niet verwijderd."
+                        )
+                        ftp.rename(file, f"{file}.old_dpd_no_match")
+                        continue
+
+                    if not tt_number or not track_en_trace_url:
+                        logger.error(
+                            f"Ontbrekende tracking info in exl ftp file {file}, order_id {order_id}. Bestand niet verwijderd."
+                        )
+                        ftp.rename(file, f"{file}.old_dpd_missing_tt")
+                        continue
+
+                    set_order_info_db_bol(order_info, track_en_trace_url, tt_number, service_number_exl)
+                    logger.info(
+                        f"{order_info} order bol tt {tt_number}, {track_en_trace_url} exellent toegevoegd; ftp file {file} wordt nu verwijderd"
+                    )
                     ftp.delete(file)
-                    # pass
                 else:
-                    customer_line_id = parse_xml.find(".//customer_line_id")
-                    if customer_line_id is not None and customer_line_id.text == "Manually Inserted":
-                        ftp.delete(file)
-                    else:
-                        logger.error(f"order id and customer_line_id not found in exl tt ftp file {file}")
+                    # customer_line_id = parse_xml.find(".//customer_line_id")
+                    # if customer_line_id is not None and customer_line_id.text == "Manually Inserted":
+                    #     ftp.delete(file)
+                    # else:
+                        logger.error(f"order id not found in exl tt ftp file {file}")
                         ftp.rename(file, f"{file}.old_dpd")
                         # pass
             except Exception as e:
@@ -1765,7 +1776,7 @@ def automatische_facturen_bol():
         return
     
     winkels = {"ADE": "vangils", "TB": "toop", "TS": "toop", "TE": "toop"}
-    odin_url = "https://toop.nl:25583/odin_website/pdf_factuur_maken"
+    odin_url = "https://toop.nl/odin_website/pdf_factuur_maken"
     # odin_url = "http://127.0.0.1:7002/odin_website/pdf_factuur_maken" # for testing
     credentials_map = {}
     for shop, credentials in config["bol_winkels_api"].items():
@@ -1985,7 +1996,6 @@ def process_automail_categories(connection, verzending_label):
 if __name__ == "__main__":
     gmail_accounts = [
         {"credentials": "credentials_gmail_zakelijk.json", "token": "token_zakelijk.pickle", "odin_verwerkt": "Label_3080760246089645102","verzending_label": "Label_2554151306297345319"},
-        {"credentials": "credentials_gmail.json", "token": "token.pickle", "odin_verwerkt": "Label_8612133870834283528","verzending_label": "Label_1372612835680541088"},
     ]
 
     for account in gmail_accounts:

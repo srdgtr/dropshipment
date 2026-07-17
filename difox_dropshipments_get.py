@@ -48,6 +48,7 @@ def check_local_drop(order_nr):
 
 for data_file in invoices:
     invoice = pd.read_csv(data_file, delimiter=";", encoding='latin-1', header=None)
+    file_name, path, new_path = data_file.name, data_file.parent.resolve(), data_file.parent.resolve() / "log"
     try:
         orderid_bron = invoice.iloc[0][2].split(":")[1]
         count = orderid_bron.count("-")
@@ -55,8 +56,7 @@ for data_file in invoices:
             orderid = orderid_bron[1:]
             order_id_leverancier = str(invoice.iloc[0][1])
             drop_num = check_local_drop(orderid)
-            if drop_num:
-                if drop_num < 5:
+            if drop_num is not None and drop_num > 0 and drop_num < 5:
                     mySql_insert_query = "UPDATE orders_info_bol SET dropship = 2, verkooporder_id_leverancier = %s WHERE orderid = %s "
                     with engine.begin() as conn:
                         conn.exec_driver_sql(mySql_insert_query, (order_id_leverancier,orderid))
@@ -69,8 +69,7 @@ for data_file in invoices:
             orderid = orderid_bron[1:]
             order_id_leverancier = str(invoice.iloc[0][1])
             drop_num = check_local_drop(orderid)
-            if drop_num:
-                if drop_num < 5:
+            if drop_num is not None and drop_num > 0 and drop_num < 5:
                     mySql_insert_query = "UPDATE blokker_order_items SET dropship = 2, verkooporder_id_leverancier = %s WHERE orderid = %s "
                     with engine.begin() as conn:
                         conn.exec_driver_sql(mySql_insert_query, (order_id_leverancier,orderid))
@@ -102,7 +101,7 @@ for data_file in backorder:
                 order_id_leverancier = invoice.iloc[0][0]
                 t_t_dropshipment = "Backorder"
                 drop_num = check_local_drop(orderid)
-                if drop_num < 5:
+                if drop_num is not None and drop_num < 5:
                     mySql_insert_query = "UPDATE orders_info_bol SET dropship = 3, t_t_dropshipment = %s,order_id_leverancier = %s WHERE orderid = %s "
                     with engine.begin() as conn:
                         conn.exec_driver_sql(mySql_insert_query, (t_t_dropshipment,order_id_leverancier,orderid))
@@ -136,10 +135,9 @@ for data_file in verzendingen:
                 elif len(t_t_dropshipment) != 15:
                     t_t_dropshipment_url = "ongeldig"
                 else:
-                    t_t_dropshipment_url = f"https://extranet.dpd.de/status/nl_NL/parcel/{t_t_dropshipment}"
+                    t_t_dropshipment_url = f"https://www.dpdgroup.com/nl/mydpd/my-parcels/incoming?parcelNumber={t_t_dropshipment}"
                 drop_num = check_local_drop(orderid)
-                if drop_num:
-                    if drop_num < 5:
+                if drop_num is not None and drop_num < 5:
                         insert_query = "UPDATE orders_info_bol SET dropship = 4, t_t_dropshipment = %s,order_id_leverancier = %s,verkooporder_id_leverancier = %s WHERE orderid = %s "
                         with engine.begin() as conn:
                             conn.exec_driver_sql(insert_query, (t_t_dropshipment_url,t_t_dropshipment,order_id_leverancier,orderid))
